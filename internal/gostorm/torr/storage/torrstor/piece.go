@@ -86,15 +86,15 @@ func (p *Piece) MarkNotComplete() error {
 	if shieldActive.Load() && !isWatchdogRunning.Swap(true) {
 		go func() {
 			for {
-				time.Sleep(10 * time.Second)
+				time.Sleep(1 * time.Second)
 				
 				// Calculate time since last corruption using atomic load
 				last := lastCorruptionUnix.Load()
 				elapsed := time.Since(time.Unix(last, 0))
 
-				if elapsed > 60*time.Second {
+				if elapsed > 15*time.Second {
 					if shieldActive.Swap(false) {
-						log.TLogln("[AdaptiveShield] Clean streak detected (60s) - Restoring FAST mode (Shield: OFF)")
+						log.TLogln("[AdaptiveShield] Clean streak detected (15s) - Restoring FAST mode (Shield: OFF)")
 					}
 					isWatchdogRunning.Store(false)
 					return // End watchdog

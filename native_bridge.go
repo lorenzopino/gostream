@@ -90,18 +90,11 @@ func (c *NativeClient) Wake(magnetUrl string, fileIdx int) error {
 			}
 		}
 		// V255: Save metadata to DB immediately so next Wake() skips GotInfo() wait.
+		// Note: ForceSaveTorrentToDB at torrent expiry captures the full peer swarm
+		// safely (no streaming active). The previous 90s delayed goroutine was
+		// removed (V306) because it fired during active playback, causing cl._mu
+		// contention (PeerConns snapshot) that briefly stalled the pump.
 		torr.SaveTorrentToDB(t)
-
-		// V255: Delayed save after 90s to capture full swarm (15-25 peers).
-		// The immediate save above only has 1-3 metadata peers.
-		// By 90s, tracker/DHT have fully responded and peer swarm is at peak.
-		// At expiry, peers have already disconnected (no data being requested).
-		go func() {
-			time.Sleep(90 * time.Second)
-			if t.Torrent != nil {
-				torr.SaveTorrentToDB(t)
-			}
-		}()
 
 		// Optimistic active update
 		c.activeHashes.Store(hash, true)
