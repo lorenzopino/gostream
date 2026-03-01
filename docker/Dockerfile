@@ -7,7 +7,11 @@ RUN apt-get update \
 WORKDIR /src
 COPY . .
 
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o /out/gostream .
+# Use Docker's automatic TARGETARCH variable for multi-arch support
+ARG TARGETARCH
+# CGO_ENABLED=1 is required for FUSE integration. 
+# -pgo=auto ensures we use profile-guided optimization if default.pgo is present.
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -pgo=auto -o /out/gostream .
 
 FROM debian:bookworm-slim
 
