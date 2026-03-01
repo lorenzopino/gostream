@@ -1887,9 +1887,17 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 		logger.Printf("[V260] Release handle for %s (Remaining Refs: %d)", filepath.Base(h.path), newRefs)
 
 		if newRefs <= 0 {
-			// V420: 30s Grace Period — allows Plex to close/reopen handles during seek
-			// without killing the background pump.
-			time.AfterFunc(30*time.Second, func() {
+			// V420: Grace Period — allows Plex to close/reopen handles during CIFS
+			// reconnect without killing the background pump.
+			// V307: Extend to 90s for webhook-confirmed playback (Plex CIFS reconnects
+			// can take >30s, killing the pump and wiping buffer lead → micro-stutter).
+			graceDuration := 30 * time.Second
+			if pbVal, ok := playbackRegistry.Load(h.path); ok {
+				if pbState := pbVal.(*PlaybackState); !pbState.ConfirmedAt.IsZero() {
+					graceDuration = 90 * time.Second
+				}
+			}
+			time.AfterFunc(graceDuration, func() {
 				if val, ok := activePumps.Load(h.path); ok {
 					psNow := val.(*NativePumpState)
 					if atomic.LoadInt32(&psNow.refCount) <= 0 {
@@ -1901,7 +1909,7 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 					}
 				}
 			})
-			logger.Printf("[V420] Last handle closed: Shared Pump entering 30s grace period for %s", filepath.Base(h.path))
+			logger.Printf("[V420] Last handle closed: Shared Pump entering %s grace period for %s", graceDuration, filepath.Base(h.path))
 		}
 	}
 
