@@ -5063,7 +5063,7 @@ class GoStormSync:
         # AGGRESSIVE instance management - kill ALL existing instances before starting
         self._kill_existing_instances()
         
-        self.log("INFO", "🎬 GoStorm Sync Starting - TMDB → Stremio → GoStorm integration")
+        self.log("INFO", "🎬 GoStorm Sync Starting - TMDB → GoStorm integration")
         self.log("INFO", f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         # Clean up unreferenced torrents BEFORE processing new content
