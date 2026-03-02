@@ -49,9 +49,25 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 
 **GoStream** runs on the Raspberry Pi. It creates a virtual hard drive that looks completely real to the rest of your network: it contains thousands of `.mkv` files, each the correct size, each seekable. In reality, none of those files exist on disk. When anything reads a byte, GoStream silently fetches it in real-time from the BitTorrent network and passes it through.
 
-**Plex** sees this virtual hard drive as a normal media library. It scans the files, downloads posters and descriptions from the internet, tracks what you've watched, and makes everything available on your home network, just like it would with a real NAS.
+**Plex** (or **Jellyfin**, or any media server) sees this virtual hard drive as a normal media library. It scans the files, downloads posters and descriptions from the internet, tracks what you've watched, and makes everything available on your home network, just like it would with a real NAS.
 
 **Infuse** on Apple TV connects to your Plex library and plays the files using Direct Play: it reads the video stream directly from the file, with no conversion or re-encoding. This is why it handles 4K HDR Dolby Vision effortlessly, even though it is coming from a torrent in real time.
+
+Because GoStream exposes standard `.mkv` files on a standard filesystem, any player or media server that can read a network share works: Plex, Jellyfin, Emby, Kodi, VLC, mpv, or anything else. No plugins, no special configuration.
+
+### How your library gets populated automatically
+
+GoStream includes sync scripts that run on a schedule and keep your library up to date without any manual intervention.
+
+Every day, a script queries **TMDB** (The Movie Database) for the latest releases, trending titles, and popular movies. For each title it finds, it searches **Torrentio** for the best available torrent (preferring 4K Dolby Vision, falling back to 1080p). If a good torrent is found, it registers it in GoStream and creates the corresponding virtual `.mkv` file in the library.
+
+The next time Plex scans, it finds a new file, downloads the poster and description, and the film appears in your library ready to play.
+
+If a better version of a film becomes available later (for example a 4K HDR release of a title you already have in 1080p), the script replaces it automatically.
+
+TV series work the same way: a weekly script finds new seasons and episodes, organises them in the Plex-compatible folder structure (`Show Name/Season 01/`), and they appear in your library within the week.
+
+You can also add a title to your **Plex Watchlist** from any device and it will appear in your library within the hour.
 
 ### Why this beats Stremio
 
@@ -90,6 +106,7 @@ On a standard virtual filesystem, these IDs are random and change every time the
 
 ## Table of Contents
 
+- [The Setup: GoStream + Plex + Infuse on Apple TV](#the-setup-gostream--plex--infuse-on-apple-tv)
 - [How the Magic Works](#how-the-magic-works)
 - [Architecture](#architecture)
 - [Core Engineering](#core-engineering)
