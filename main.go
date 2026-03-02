@@ -1103,8 +1103,19 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 			atomic.StoreInt64(&h.lastOff, resumeOffset)
 		}
 
+		// V-lookahead: on cold start (resumeOffset=0), offset the pump by 1 chunk so it
+		// downloads [chunkSize, 2×chunkSize) while FetchBlock serves [0, chunkSize).
+		// When the player reaches chunkSize, the pump has it ready → raCache HIT.
+		pumpStart := resumeOffset
+		if resumeOffset == 0 {
+			pumpChunk := int64(globalConfig.ReadAheadBase)
+			if pumpChunk == 0 {
+				pumpChunk = 16 * 1024 * 1024
+			}
+			pumpStart = pumpChunk
+		}
 		safeGo(func() {
-			h.nativePump(pumpCtx, resumeOffset)
+			h.nativePump(pumpCtx, pumpStart)
 		})
 	default:
 		// If slots are full, it will fall back to per-request slots in Read
@@ -2182,12 +2193,6 @@ func (c *ReadAheadCache) Get(p string, off, end int64) []byte {
 	defer s.mu.RUnlock()
 	key := raChunkKey(p, off)
 	if b, ok := s.buffers[key]; ok && off >= b.start && end <= b.end {
-		// V304: In STRICT mode, treat responsive-only chunks as misses.
-		// This forces the pump to re-read the position from the torrent (STRICT mode),
-		// overwriting the corrupt responsive-mode entry with SHA1-verified data.
-		if b.responsiveOnly && !torrstor.IsResponsive() {
-			return nil
-		}
 		// V244-Fix: Update activity timestamp atomically (Lock-Free)
 		atomic.StoreInt64(&b.lastAccess, time.Now().UnixNano())
 		// V274-Fix: Defensive copy — channel-based pool evicts buffers immediately,
@@ -2219,12 +2224,6 @@ func (c *ReadAheadCache) CopyTo(p string, off, end int64, dest []byte) int {
 	defer s.mu.RUnlock()
 	key := raChunkKey(p, off)
 	if b, ok := s.buffers[key]; ok && off >= b.start && end <= b.end {
-		// V304: In STRICT mode, treat responsive-only chunks as misses.
-		// Forces FUSE to fall through to FetchBlock (verified data) instead of serving
-		// unverified responsive-mode data after adaptive shield activation.
-		if b.responsiveOnly && !torrstor.IsResponsive() {
-			return 0
-		}
 		atomic.StoreInt64(&b.lastAccess, time.Now().UnixNano())
 		src := b.data[off-b.start : end-b.start+1]
 		n := copy(dest, src)
@@ -2804,6 +2803,10 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 				activePumps.Delete(stopMatch)
 				logger.Printf("[PLEX] STOP: force-terminated pump for %s", filepath.Base(stopMatch))
 			}
+
+			// V304: Reset Adaptive Shield on media.stop — clean slate for next viewing
+			torrstor.ResetShield()
+			logger.Printf("[AdaptiveShield] Shield reset on media.stop")
 
 			// Deactivate Core Priority
 			if stopState.Hash != "" {

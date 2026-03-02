@@ -2288,6 +2288,22 @@ func (t *Torrent) pieceHashed(piece pieceIndex, passed bool, hashIoErr error) {
 					c.ban()
 				}
 			}
+
+			// V304: Threshold-based eviction — ban any peer with >= 3 bad pieces
+			// regardless of whether they are the sole dirtier.
+			// LoadOrStore ensures each IP is banned and logged only once per session.
+			const badPeerThreshold int64 = 3
+			for _, c := range bannableTouchers {
+				if c.stats().PiecesDirtiedBad.Int64() >= badPeerThreshold {
+					ipStr := c.remoteIp().String()
+					if _, alreadyBanned := v304BannedIPs.LoadOrStore(ipStr, struct{}{}); !alreadyBanned {
+						t.logger.Levelf(log.Warning,
+							"[AdaptiveShield] evicting peer %v: %d corrupt pieces (threshold %d) — session ban applied",
+							c.remoteIp(), c.stats().PiecesDirtiedBad.Int64(), badPeerThreshold)
+						c.ban()
+					}
+				}
+			}
 		}
 		t.onIncompletePiece(piece)
 		p.Storage().MarkNotComplete()

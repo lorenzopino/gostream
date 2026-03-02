@@ -1271,6 +1271,10 @@ func (cl *Client) badPeerIPPort(ip net.IP, port int) bool {
 	if _, ok := cl.badPeerIPs[ipAddr]; ok {
 		return true
 	}
+	// V304: Check explicit string-keyed ban set (no normalization issues)
+	if _, ok := v304BannedIPs.Load(ip.String()); ok {
+		return true
+	}
 	return false
 }
 
