@@ -816,6 +816,13 @@
                                                 class="slider"></span></label>
                                     </div>
 
+                                    <div class="switch-item">
+                                        <div><span>Adaptive Shield <span style="display:inline-block;font-size:9px;font-weight:600;letter-spacing:.4px;padding:1px 5px;border-radius:3px;background:rgba(245,158,11,.15);color:#d97706;vertical-align:middle;margin-left:4px;">EXPERIMENTAL</span></span>
+                                            <div class="hint">Auto-switches to Strict Mode when piece corruption is detected.<br>Disable only if seeders are stable and shield causes unnecessary slowdowns.</div>
+                                        </div><label class="switch"><input type="checkbox" name="adaptiveShield"><span
+                                                class="slider"></span></label>
+                                    </div>
+
                                     <div class="switch-item advanced">
                                         <div><span>Debug Log</span>
                                             <div class="hint">Enable detailed server logging</div>
@@ -1043,7 +1050,7 @@
                 form.querySelector('[name="torrentDisconnectTimeout"]').value = originalCore.TorrentDisconnectTimeout;
                 form.querySelector('[name="torrentsSavePath"]').value = originalCore.TorrentsSavePath;
                 form.querySelector('[name="retrackersMode"]').value = originalCore.RetrackersMode;
-                const allToggleKeys = ["ResponsiveMode", "UseDisk", "EnableIPv6", "DisableUTP", "DisableDHT", "DisablePEX", "DisableTCP", "DisableUpload", "ForceEncrypt", "EnableDebug"];
+                const allToggleKeys = ["ResponsiveMode", "AdaptiveShield", "UseDisk", "EnableIPv6", "DisableUTP", "DisableDHT", "DisablePEX", "DisableTCP", "DisableUpload", "ForceEncrypt", "EnableDebug"];
                 allToggleKeys.forEach(k => {
                     const formKey = k.charAt(0).toLowerCase() + k.slice(1);
                     const input = form.querySelector(`[name="${formKey}"]`);
@@ -1069,7 +1076,7 @@
             sets.TorrentDisconnectTimeout = parseInt(formData.get('torrentDisconnectTimeout'));
             sets.TorrentsSavePath = formData.get('torrentsSavePath');
             sets.RetrackersMode = parseInt(formData.get('retrackersMode'));
-            const allToggleKeys = ["ResponsiveMode", "UseDisk", "EnableIPv6", "DisableUTP", "DisableDHT", "DisablePEX", "DisableTCP", "DisableUpload", "ForceEncrypt", "EnableDebug"];
+            const allToggleKeys = ["ResponsiveMode", "AdaptiveShield", "UseDisk", "EnableIPv6", "DisableUTP", "DisableDHT", "DisablePEX", "DisableTCP", "DisableUpload", "ForceEncrypt", "EnableDebug"];
             allToggleKeys.forEach(k => {
                 const formKey = k.charAt(0).toLowerCase() + k.slice(1);
                 const isUIOn = formData.has(formKey);

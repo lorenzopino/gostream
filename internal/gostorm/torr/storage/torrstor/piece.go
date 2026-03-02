@@ -77,7 +77,7 @@ func (p *Piece) MarkNotComplete() error {
 	lastCorruptionUnix.Store(now)
 
 	// Activate shield if user settings allowed responsive mode but it's now dirty.
-	if settings.GetResponsiveMode() && !shieldActive.Load() {
+	if settings.GetAdaptiveShield() && settings.GetResponsiveMode() && !shieldActive.Load() {
 		log.TLogln("[AdaptiveShield] Corruption detected for piece", p.Id, "- Force STRICT mode (Shield: ACTIVE)")
 		shieldActive.Store(true)
 	}

@@ -50,6 +50,7 @@ type BTSets struct {
 
 	// Reader
 	ResponsiveMode bool // enable Responsive reader (don't wait pieceComplete)
+	AdaptiveShield bool // enable auto-STRICT on corruption (V303); default false
 
 	// FS
 	ShowFSActiveTorr bool
@@ -172,6 +173,13 @@ func GetResponsiveMode() bool {
 	btsetsMu.RLock()
 	defer btsetsMu.RUnlock()
 	return BTsets.ResponsiveMode
+}
+
+// GetAdaptiveShield returns the current AdaptiveShield setting with mutex protection.
+func GetAdaptiveShield() bool {
+	btsetsMu.RLock()
+	defer btsetsMu.RUnlock()
+	return BTsets.AdaptiveShield
 }
 
 func loadBTSets() {
