@@ -54,6 +54,7 @@ type Config struct {
 	ProxyListenPort   int    `json:"proxy_listen_port"`
 	MetricsPort       int    `json:"metrics_port"`
 	BlockListURL      string `json:"blocklist_url"`
+	AIURL             string `json:"ai_url"` // V1.4.5: AI Optimizer sidecar URL
 
 	// --- FUSE Paths ---
 	// Fallback when CLI args are omitted. CLI args always take precedence.
@@ -127,6 +128,7 @@ func LoadConfig() Config {
 		WarmupHeadSizeMB:        64,
 
 		GoStormBaseURL: "http://127.0.0.1:8090",
+		AIURL:          "http://127.0.0.1:8085", // Default Pi internal AI port (V1.4.5)
 		ProxyListenPort:   8080,
 		MetricsPort:       8096,
 
@@ -229,6 +231,9 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("MKV_PROXY_GOSTORM_URL"); v != "" {
 		c.GoStormBaseURL = v
+	}
+	if v := os.Getenv("MKV_PROXY_AI_URL"); v != "" {
+		c.AIURL = v
 	}
 	if v := os.Getenv("MKV_PROXY_LOG_LEVEL"); v != "" {
 		c.LogLevel = v

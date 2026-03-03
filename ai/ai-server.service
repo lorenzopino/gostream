@@ -1,0 +1,18 @@
+[Unit]
+Description=Llama.cpp AI Server for GoStream
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/GoStream/ai
+# Fixed ExecStart on a single line to ensure correct parameter passing
+ExecStart=/home/pi/GoStream/ai/llama.cpp/build/bin/llama-server -m /home/pi/GoStream/ai/models/qwen2.5-0.5b-instruct-q4_k_m.gguf --port 8085 -t 2 -c 256 --host 0.0.0.0
+    
+Restart=always
+RestartSec=10
+Nice=15
+MemoryMax=800M
+
+[Install]
+WantedBy=multi-user.target

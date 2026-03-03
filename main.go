@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"gostream/ai"
 	server "gostream/internal/gostorm"
 	"gostream/internal/gostorm/settings"
 	torrstor "gostream/internal/gostorm/torr/storage/torrstor"
@@ -2983,6 +2984,11 @@ func main() {
 
 	// V160: Initialize Native Bridge for Zero-Network metadata operations
 	nativeBridge = NewNativeClient()
+
+	// V1.4.5: Start AI Optimizer Sidecar (if configured)
+	if globalConfig.AIURL != "" {
+		go ai.StartAITuner(context.Background(), globalConfig.AIURL)
+	}
 
 	// V298: Automatic BlockList Update
 	if globalConfig.BlockListURL != "" {
