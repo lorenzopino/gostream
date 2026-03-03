@@ -496,12 +496,12 @@
                         <div class="form-section-title">Core & Streaming</div>
                         <div class="form-grid">
                             <div class="form-group" style="grid-column: 1 / -1;">
-                                <label>ReadAhead Budget (MB)</label>
+                                <label>FUSE Cache Budget (MB)</label>
                                 <div class="range-group">
-                                    <input type="range" name="read_ahead_budget_mb" min="64" max="512" step="32">
+                                    <input type="range" name="read_ahead_budget_mb" min="128" max="512" step="32">
                                     <span class="range-val" data-for="read_ahead_budget_mb">256 MB</span>
                                 </div>
-                                <div class="hint">RAM for raCache pre-read buffer</div>
+                                <div class="hint">RAM for raCache pre-read buffer (recommended: 256 MB)</div>
                             </div>
                             <div class="form-group">
                                 <label>Master Concurrency</label>
@@ -679,10 +679,10 @@
                                 <div class="form-group">
                                     <label>Cache Size (MB)</label>
                                     <div class="range-group">
-                                        <input type="range" name="cacheSize" min="16" max="256" step="16">
+                                        <input type="range" name="cacheSize" min="64" max="256" step="16">
                                         <span class="range-val" data-for="cacheSize">64</span>
                                     </div>
-                                    <div class="hint">GoStorm piece buffer (feeds raCache)</div>
+                                    <div class="hint">GoStorm piece buffer, feeds raCache (recommended: 128 MB)</div>
                                 </div>
                                 <div class="form-group">
                                     <label>Readahead Cache (%)</label>
@@ -690,7 +690,9 @@
                                         <input type="range" name="readerReadAHead" min="10" max="95" step="5">
                                         <span class="range-val" data-for="readerReadAHead">50</span>
                                     </div>
-                                    <div class="hint">% of CacheSize for piece readahead</div>
+                                    <div class="hint">% of CacheSize for piece readahead (recommended: 75%)</div>
+                                    <div id="readahead-metric" class="switch-item"
+                                        style="margin-top:30px; font-size:10px;"></div>
                                 </div>
                             </div>
 
@@ -945,6 +947,54 @@
             slider.addEventListener('input', () => { label.textContent = slider.value + suffix; });
         });
 
+        // --- Readahead Metric (informative only, no auto-adjust) ---
+        function updateReadaheadCoupling() {
+            const budgetSlider = document.querySelector('[name="read_ahead_budget_mb"]');
+            const cacheSizeSlider = document.querySelector('[name="cacheSize"]');
+            const pctSlider = document.querySelector('[name="readerReadAHead"]');
+            const metric = document.getElementById('readahead-metric');
+            if (!budgetSlider || !cacheSizeSlider || !pctSlider || !metric) return;
+
+            const budget = parseInt(budgetSlider.value);
+            const cacheSize = parseInt(cacheSizeSlider.value);
+            const pct = parseInt(pctSlider.value);
+            const effective = Math.round(cacheSize * pct / 100);
+
+            const headroom = budget - effective;
+            if (effective > budget) {
+                metric.style.color = '#ff9800';
+                metric.textContent = `Effective readahead: ${effective} MB / Budget: ${budget} MB ⚠ exceeds budget`;
+            } else if (effective < 64) {
+                metric.style.color = '#ff9800';
+                metric.textContent = `Effective readahead: ${effective} MB / Budget: ${budget} MB ⚠ too low for smooth streaming (min 4 chunks = 64 MB)`;
+            } else if (headroom < 16) {
+                metric.style.color = '#ff9800';
+                metric.textContent = `Effective readahead: ${effective} MB / Budget: ${budget} MB ⚠ headroom too low (${headroom} MB), risk of stalls`;
+            } else if (pct > 75) {
+                metric.style.color = '#ff9800';
+                metric.textContent = `Effective readahead: ${effective} MB / Budget: ${budget} MB ⚠ Readahead % above recommended (75%)`;
+            } else if (pct < 50) {
+                metric.style.color = '#ff9800';
+                metric.textContent = `Effective readahead: ${effective} MB / Budget: ${budget} MB ⚠ Readahead % too low (min 50%)`;
+            } else if (cacheSize > budget) {
+                metric.style.color = '#ff9800';
+                metric.textContent = `Effective readahead: ${effective} MB / Budget: ${budget} MB ⚠ Cache Size exceeds Budget, wasted GoStorm RAM`;
+            } else if (budget >= cacheSize * 4) {
+                metric.style.color = '#ff9800';
+                metric.textContent = `Effective readahead: ${effective} MB / Budget: ${budget} MB ⚠ Budget too large for Cache Size, wasted RAM`;
+            } else {
+                metric.style.color = '#4caf50';
+                metric.textContent = `Effective readahead: ${effective} MB / Budget: ${budget} MB ✓`;
+            }
+        }
+        ['read_ahead_budget_mb', 'cacheSize', 'readerReadAHead'].forEach(name => {
+            const el = document.querySelector(`[name="${name}"]`);
+            if (el) el.addEventListener('input', updateReadaheadCoupling);
+        });
+        // Only run coupling after both GoStream and GoStorm have loaded real values
+        let _couplingLoaded = 0;
+        function markCouplingLoaded() { if (++_couplingLoaded >= 2) updateReadaheadCoupling(); }
+
         // --- GoStream Logic ---
         let originalEngine = {};
         const ENGINE_ROOT_KEYS = [
@@ -985,6 +1035,7 @@
                     form.querySelector('[data-nested="natpmp.enabled"]').checked = (n.Enabled !== undefined) ? n.Enabled : n.enabled;
                     updateNatPmpState();
                 }
+                markCouplingLoaded();
             } catch (e) { console.error("Engine load error", e); }
         }
 
@@ -1059,6 +1110,7 @@
                 form.querySelector('[data-for="cacheSize"]').textContent = csVal + ' MB';
                 form.querySelector('[name="readerReadAHead"]').value = originalCore.ReaderReadAHead;
                 form.querySelector('[data-for="readerReadAHead"]').textContent = originalCore.ReaderReadAHead + '%';
+                markCouplingLoaded();
                 form.querySelector('[name="downloadRateLimit"]').value = originalCore.DownloadRateLimit ? Math.round(originalCore.DownloadRateLimit / 1024) : '';
                 form.querySelector('[name="uploadRateLimit"]').value = originalCore.UploadRateLimit ? Math.round(originalCore.UploadRateLimit / 1024) : '';
                 form.querySelector('[name="connectionsLimit"]').value = originalCore.ConnectionsLimit;
