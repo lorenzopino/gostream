@@ -117,13 +117,12 @@ func runTuningCycle(aiURL string) {
 		bufferStatus = "STALE (Ignore it)"
 	}
 
-	contextStr := fmt.Sprintf("Fiber Optic, 4K Stream, File:%.1fGB, ActiveTorrents:%d, TotalDL:%.1fMB/s, Buffer:%s",
+	contextStr := fmt.Sprintf("Fiber Optic, 4K Stream, File:%.1fGB, ActiveTorrents:%d, TotalDLSpeed:%.1fMB/s, Buffer:%s",
 		fileSizeGB, realActiveCount, totalDL, bufferStatus)
 
 	// V1.4.25: User-optimized prompt with 1.2MB/s threshold for better reactivity
-	prompt := fmt.Sprintf("<|im_start|>system\nYou are a BitTorrent Tuning unit for Raspberry Pi 4.\nContext: %s\nIMPORTANT: If Speed is < 1.2MB/s and CPU is Low, set ConnectionsLimit=60, PeerTimeout=15.\nObjective: 100%% Buffer, Fast Performance, Stable CPU.\nRespond ONLY with a compact JSON object like: {\"ConnectionsLimit\": 25, \"PeerTimeout\": 30}<|im_end|>\n<|im_start|>user\nAnalyze trend: %s. DECIDE.<|im_end|>\n<|im_start|>assistant\n", 
+	prompt := fmt.Sprintf("<|im_start|>system\nYou are a BitTorrent Tuning unit for Raspberry Pi 4.\nContext: %s\nIMPORTANT: If Speed is < 1.2MB/s and CPU is Low, set ConnectionsLimit=60, PeerTimeout=15.\nObjective: 100%% Buffer, Fast Performance, Stable CPU.\nRespond ONLY with a compact JSON object like: {\"ConnectionsLimit\": 25, \"PeerTimeout\": 30}<|im_end|>\n<|im_start|>user\nAnalyze trend: %s. DECIDE.<|im_end|>\n<|im_start|>assistant\n",
 		contextStr, historyStr)
-
 
 	tweak, err := callAI(aiURL, prompt)
 	if err != nil {
