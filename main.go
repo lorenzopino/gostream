@@ -2403,6 +2403,15 @@ func (c *ReadAheadCache) triggerGlobalEviction(activePath string, activeSessionI
 	}
 	defer atomic.StoreInt32(&c.isEvicting, 0) // V249: StoreInt32 for consistency
 
+	// AI-Feature: Smart Cache Eviction
+	// We notify the AI of the eviction event. It's fire-and-forget.
+	totalUsedMB := int(atomic.LoadInt64(&c.used) / (1024 * 1024))
+	// We approximate SeekOffset by checking how far the latest chunk of activePath is.
+	var maxOff int64
+	if activePath != "" {
+		maxOff = c.MaxCachedOffset(activePath)
+	}
+
 	now := time.Now().UnixNano()
 	// V250: Increased stale threshold to 120s for 4K stability
 	staleThreshold := (120 * time.Second).Nanoseconds()
