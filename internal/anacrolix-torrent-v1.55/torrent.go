@@ -2184,6 +2184,12 @@ func (t *Torrent) SetMaxEstablishedConns(max int) (oldMax int) {
 	return oldMax
 }
 
+func (t *Torrent) MaxEstablishedConns() int {
+	t.cl.lock()
+	defer t.cl.unlock()
+	return t.maxEstablishedConns
+}
+
 func (t *Torrent) pieceHashed(piece pieceIndex, passed bool, hashIoErr error) {
 	t.logger.LazyLog(log.Debug, func() log.Msg {
 		return log.Fstr("hashed piece %d (passed=%t)", piece, passed)

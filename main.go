@@ -74,6 +74,15 @@ var globalTorrentRemover *TorrentRemover
 // Global configuration (FASE 4.16 - Env Configuration)
 var globalConfig Config
 
+// GetEffectiveConcurrencyLimit returns AI limit if set, otherwise globalConfig default
+func GetEffectiveConcurrencyLimit() int {
+	aiLimit := int(atomic.LoadInt32(&ai.CurrentLimit))
+	if aiLimit > 0 {
+		return aiLimit
+	}
+	return globalConfig.MasterConcurrencyLimit
+}
+
 // PlaybackState traccia lo stato di una sessione di visione reale
 type PlaybackState struct {
 	mu          sync.RWMutex
@@ -1665,7 +1674,7 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 							// V238: Unlock FULL Aggressive Mode on upgrade
 							hHash := metainfo.NewHashFromHex(h.hash)
 							if t := web.BTS.GetTorrent(hHash); t != nil {
-								t.SetAggressiveMode(true, globalConfig.MasterConcurrencyLimit)
+								t.SetAggressiveMode(true, GetEffectiveConcurrencyLimit())
 								logger.Printf("[V238] FULL Aggressive Mode enabled on-the-fly for: %s", h.hash[:8])
 							}
 
@@ -2403,15 +2412,6 @@ func (c *ReadAheadCache) triggerGlobalEviction(activePath string, activeSessionI
 	}
 	defer atomic.StoreInt32(&c.isEvicting, 0) // V249: StoreInt32 for consistency
 
-	// AI-Feature: Smart Cache Eviction
-	// We notify the AI of the eviction event. It's fire-and-forget.
-	totalUsedMB := int(atomic.LoadInt64(&c.used) / (1024 * 1024))
-	// We approximate SeekOffset by checking how far the latest chunk of activePath is.
-	var maxOff int64
-	if activePath != "" {
-		maxOff = c.MaxCachedOffset(activePath)
-	}
-
 	now := time.Now().UnixNano()
 	// V250: Increased stale threshold to 120s for 4K stability
 	staleThreshold := (120 * time.Second).Nanoseconds()
@@ -2707,8 +2707,8 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 				h := metainfo.NewHashFromHex(exactState.Hash)
 				if t := web.BTS.GetTorrent(h); t != nil {
 					t.IsPriority = true
-					// V238: Unlock full aggression for confirmed playback
-					t.SetAggressiveMode(true, globalConfig.MasterConcurrencyLimit)
+					// V238: Unlock full aggression for confirmed playback (AI Pilot has final say)
+					t.SetAggressiveMode(true, GetEffectiveConcurrencyLimit())
 					logger.Printf("[PLEX] High Priority + FULL Aggressive Mode enabled for torrent: %s", exactState.Hash)
 				}
 			}

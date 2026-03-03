@@ -222,7 +222,7 @@ func (bt *BTServer) configure(ctx context.Context) {
 	bt.config.UpnpID = upnpID
 	bt.config.HTTPUserAgent = userAgent
 	bt.config.ExtendedHandshakeClientVersion = cliVers
-	bt.config.EstablishedConnsPerTorrent = 35 // V266: Increased from 25 for better seeder discovery
+	bt.config.EstablishedConnsPerTorrent = settings.BTsets.ConnectionsLimit // V301: Respect DB settings instead of hardcoded 35
 	// V87-Balanced-Discovery: Optimized for Pi + home router
 	// Balance fast discovery with system safety
 	bt.config.TotalHalfOpenConns = 500          // V264: Was 800, reduced for Pi 4 stability

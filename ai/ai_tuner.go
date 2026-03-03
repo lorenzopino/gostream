@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"gostream/internal/gostorm/torr"
@@ -19,6 +20,7 @@ var lastConns = 30
 var lastTimeout = 30
 var metricsHistory []string
 var lastKnownTotalSpeed float64
+var CurrentLimit int32 // V1.6.1: Exported for main package consumption
 
 type AITweak struct {
 	ConnectionsLimit int    `json:"connections_limit"`
@@ -70,7 +72,10 @@ func runTuningCycle(aiURL string) {
 			activeT = t
 		}
 	}
-	if activeT == nil { return }
+	if activeT == nil { 
+		lastKnownTotalSpeed = 0
+		return 
+	}
 
 	lastKnownTotalSpeed = totalSpeed / (1024 * 1024)
 	st := activeT.StatHighFreq()
@@ -112,9 +117,14 @@ func runTuningCycle(aiURL string) {
 	tweak.Sanitize()
 
 	if activeT.Torrent != nil {
-		oldConns := lastConns
+		oldConns := activeT.Torrent.MaxEstablishedConns()
 		oldTimeout := lastTimeout
+		
 		activeT.Torrent.SetMaxEstablishedConns(tweak.ConnectionsLimit)
+		
+		// V1.6.1: Sync with exported variable for main package
+		atomic.StoreInt32(&CurrentLimit, int32(tweak.ConnectionsLimit))
+		
 		activeT.AddExpiredTime(time.Duration(tweak.PeerTimeout) * time.Second)
 		lastConns = tweak.ConnectionsLimit
 		lastTimeout = tweak.PeerTimeout
