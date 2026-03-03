@@ -10,7 +10,7 @@ The system consists of two main components running on the Raspberry Pi:
     *   **Engine**: `llama.cpp` server mode.
     *   **Model**: `qwen2.5-0.5b-instruct-q4_k_m.gguf` (Quantized for ARM).
     *   **Port**: `8085` (Internal).
-    *   **Resources**: Limited to 2 threads, 256 context size, 800MB RAM.
+    *   **Resources**: Limited to 2 threads, 256 context size, 500MB RAM.
     *   **Priority**: `Nice=15` (Low priority) to never interrupt video playback.
 
 2.  **AI Tuner (`gostream/ai`)**:
