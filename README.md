@@ -1028,4 +1028,4 @@ GoStream is free and open source. If it's saving you a monthly chip, consider fu
 
 ## License
 
-MIT
+GNU General Public License v2.0
