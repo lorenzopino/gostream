@@ -30,6 +30,11 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 - Everything ships as a **single binary**: GoStorm engine, GoStream, metrics, control panel, and webhook receiver in one `gostream` executable.
 
 ---
+## Control Panel
+
+![GoStream Control Panel — overview](docs/screenshots/control_1.png)
+
+---
 
 ## The Setup: GoStream + Plex + Infuse on Apple TV
 
@@ -87,11 +92,10 @@ On a standard virtual filesystem, these IDs are random and change every time the
 
 ---
 
-## Screenshots
+## Health Monitor
 
 ![Health Monitor — Status grid and sync controls](docs/screenshots/health_monitor_1.png)
 
-![GoStream Control Panel — overview](docs/screenshots/control_1.png)
 
 ---
 
