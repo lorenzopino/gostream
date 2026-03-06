@@ -25,3 +25,6 @@ venv/
 
 # Compiled binary
 gostream
+
+.gemini/
+gha-creds-*.json
