@@ -180,7 +180,8 @@ class GoStormTV:
         self.logger = logging.getLogger("GoStormTV")
 
     def log(self, level: str, msg: str):
-        getattr(self.logger, level.lower(), self.logger.info)(msg)
+        log_func = getattr(self.logger, "warning" if level.lower() == "warn" else level.lower(), self.logger.info)
+        log_func(msg)
 
     # ===== EPISODE REGISTRY =====
 
