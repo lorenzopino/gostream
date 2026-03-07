@@ -13,6 +13,7 @@ import re
 import sys
 import time
 import requests
+from prowlarr_client import ProwlarrClient
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import subprocess
@@ -115,6 +116,9 @@ class GoStormSync:
         self.TORRENTIO_EXCLUDE_QUALITIES = os.getenv("TORRENTIO_EXCLUDE", "480p,720p,scr,cam")
         self.TORRENTIO_4K_FOCUS = os.getenv("TORRENTIO_4K_FOCUS", "0") == "1"
         self.TORRENTIO_PROVIDERS = os.getenv("TORRENTIO_PROVIDERS", "")  # empty = all providers
+
+        # Prowlarr Adapter
+        self.prowlarr = ProwlarrClient()
         # Sizes
         self.BYTES_PER_GB = 1024 * 1024 * 1024
         self.MOVIE_4K_MIN_GB = int(os.getenv("MOVIE_4K_MIN_GB", "10"))  # ora configurabile via ENV
@@ -2438,6 +2442,23 @@ class GoStormSync:
         content_type: "movie" or "series"
         """
         import re
+        
+        # 1. Try Prowlarr Adapter First
+        try:
+            prowlarr_streams = self.prowlarr.fetch_torrents(imdb_id, content_type)
+            if prowlarr_streams:
+                self.log("INFO", f"✅ Found {len(prowlarr_streams)} streams via Prowlarr for {imdb_id}")
+                # Use same filtering as Torrentio
+                prowlarr_data = {"streams": prowlarr_streams}
+                if content_type == "movie":
+                    return self._filter_movie_streams(prowlarr_data)
+                elif content_type == "series":
+                    return self._filter_tv_streams(prowlarr_data)
+                return prowlarr_data
+        except Exception as e:
+            self.log("ERROR", f"Prowlarr fetch failed: {e}")
+
+        # 2. Fallback to Torrentio (Original logic)
         
         # For testing, return mock magnet links (mixed 4K and 1080p for fallback testing)
         if self.TMDB_API_KEY == "test-mode":

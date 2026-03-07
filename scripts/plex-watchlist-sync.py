@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 import requests
+from prowlarr_client import ProwlarrClient
 
 
 def _load_gostream_config() -> dict:
@@ -93,6 +94,8 @@ _trackers_cache: List[str] = []
 _trackers_cache_time: float = 0.0
 _last_api_call: float = 0.0
 MIN_API_INTERVAL = 0.5   # seconds between external API calls
+
+prowlarr = ProwlarrClient()
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -339,7 +342,17 @@ def is_already_present(item: Dict, imdb_set: set, title_index: Dict) -> bool:
 # ── 3. Torrentio ──────────────────────────────────────────────────────────────
 
 def get_torrentio_streams(imdb_id: str) -> List[Dict]:
-    """Fetch movie streams from Torrentio for the given IMDB ID."""
+    """Fetch movie streams from Prowlarr (primary) or Torrentio (fallback) for the given IMDB ID."""
+    # 1. Prowlarr Search
+    try:
+        streams = prowlarr.fetch_torrents(imdb_id, "movie")
+        if streams:
+            log.info(f"✅ Prowlarr: found {len(streams)} streams for {imdb_id}")
+            return streams
+    except Exception as e:
+        log.debug(f"Prowlarr fetch error for {imdb_id}: {e}")
+
+    # 2. Torrentio Fallback
     url = f"{TORRENTIO_BASE}/{TORRENTIO_CONFIG}/stream/movie/{imdb_id}.json"
     r = safe_get(url, timeout=15)
     if not r:
