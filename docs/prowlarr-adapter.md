@@ -23,8 +23,8 @@ The sync scripts (`gostorm-sync-complete.py`, `plex-watchlist-sync.py`, `gostorm
 
 ## Configuration
 The adapter is pre-configured with the following parameters:
-- **Prowlarr IP**: `http://192.168.1.250:9696`
-- **API Key**: `80b0e137663b4523bae737ec8f5fc791`
+- **Prowlarr IP**: `http://<your-ip>:9696`
+- **API Key**: `your-api-key`
 - **Timeout**: `45 seconds` (Optimized for deep indexer searches).
 
 ## Validation
