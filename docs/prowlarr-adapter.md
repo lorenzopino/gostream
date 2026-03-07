@@ -25,7 +25,7 @@ The sync scripts (`gostorm-sync-complete.py`, `plex-watchlist-sync.py`, `gostorm
 The adapter is should be configured with yur Prowlarr parameters:
 - **Prowlarr IP**: `http://<your-ip>:9696`
 - **API Key**: `your-api-key`
-- **Timeout**: `45 seconds` (Optimized for deep indexer searches).
+- **Timeout**: `30 seconds` (Optimized for deep indexer searches).
 
 ## Validation
 - **Unit Tests**: `test_prowlarr_client.py` verifies API response parsing and Torrentio-compatible title generation.
