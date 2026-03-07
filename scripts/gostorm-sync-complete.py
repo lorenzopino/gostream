@@ -2457,8 +2457,6 @@ class GoStormSync:
                     filtered = self._filter_tv_streams(prowlarr_data)
                 else:
                     filtered = prowlarr_data
-                
-                # Aggiungiamo il conteggio originale per il logging
                 filtered['raw_count'] = len(prowlarr_streams)
                 return filtered
         except Exception as e:
@@ -3519,15 +3517,15 @@ class GoStormSync:
 
             # Skip noisy retries for titles that recently had no Torrentio streams
             if self._is_movie_no_stream_cached(imdb_id):
-                self.log("DEBUG", f"Skip movie (recent no-stream cache): {title} ({imdb_id})")
+                self.log("INFO", f"Skip movie (recent no-stream cache): {title} ({imdb_id})")
                 continue
             # Skip movies recently checked and already considered stable
             if self._is_movie_recheck_cached(imdb_id):
-                self.log("DEBUG", f"Skip movie (recheck cache): {title} ({imdb_id})")
+                self.log("INFO", f"Skip movie (recheck cache): {title} ({imdb_id})")
                 continue
             # Skip movies in cooldown after repeated add-torrent failures
             if self._is_movie_add_fail_cached(imdb_id):
-                self.log("DEBUG", f"Skip movie (add-fail cooldown): {title} ({imdb_id})")
+                self.log("INFO", f"Skip movie (add-fail cooldown): {title} ({imdb_id})")
                 continue
             
             self.log("INFO", f"Processing movie: {title} ({imdb_id})")
@@ -3537,12 +3535,7 @@ class GoStormSync:
             streams = streams_data.get("streams", [])
             
             if not streams:
-                # Se streams_data aveva qualcosa ma streams (filtrati) è vuoto, significa che sono stati scartati
-                if streams_data.get('raw_count', 0) > 0:
-                    self.log("INFO", f"Skip movie (no valid streams meet criteria): {title}")
-                else:
-                    self.log("WARN", f"No streams found for movie: {title}")
-                
+                self.log("WARN", f"No streams found for movie: {title}")
                 self._mark_movie_no_stream(imdb_id, title)
                 continue
             self._clear_movie_no_stream(imdb_id)
@@ -3563,7 +3556,7 @@ class GoStormSync:
                     valid_streams = valid_1080p
             
             if not valid_streams:
-                self.log("INFO", f"Skip movie (no valid streams meet criteria): {title}")
+                self.log("INFO", f"Skip movie (all {len(streams)} streams filtered out): {title}")
                 continue
             
             # Find best stream that's not already present AND better than existing
@@ -3598,13 +3591,16 @@ class GoStormSync:
                     if existing_torrent_info:
                         existing_title = existing_torrent_info.get('title', '')
                         best_score = self.calculate_quality_score(existing_title, seeders=0)
+                        self.log("INFO", f"Movie already in library (score: {best_score}): {title}")
                         self.log("INFO", f"Existing movie score baseline: {best_score} (title: {existing_title[:60]}...)")
                     else:
                         # Fallback to filename scoring
                         best_score = self.calculate_quality_score(existing_filename, seeders=0)
+                        self.log("INFO", f"Movie already in library (score: {best_score}): {title}")
                         self.log("INFO", f"Existing movie score baseline (filename): {best_score}")
                 else:
                     best_score = self.calculate_quality_score(existing_filename, seeders=0)
+                    self.log("INFO", f"Movie already in library (score: {best_score}): {title}")
                     self.log("INFO", f"Existing movie score baseline (no hash): {best_score}")
             else:
                 best_score = 0
@@ -5403,7 +5399,7 @@ class GoStormSync:
         # AGGRESSIVE instance management - kill ALL existing instances before starting
         self._kill_existing_instances()
         
-        self.log("INFO", "🎬 GoStorm Sync Starting - TMDB → GoStorm integration")
+        self.log("INFO", "🎬 GoStorm Sync Starting (v1.5.4-Prowlarr) - TMDB → GoStorm integration")
         self.log("INFO", f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         # Clean up unreferenced torrents BEFORE processing new content
