@@ -13,10 +13,10 @@ from typing import List, Dict, Any, Optional
 class ProwlarrClient:
     def __init__(self):
         # Configuration - Set to True to use Prowlarr, False to use Torrentio only
-        self.ENABLED = False
+        self.ENABLED = True
         
-        self.API_KEY = "your-api-key"
-        self.BASE_URL = "http://<your-ip>:9696"
+        self.API_KEY = "80b0e137663b4523bae737ec8f5fc791"
+        self.BASE_URL = "http://192.168.1.250:9696"
         self.SEARCH_ENDPOINT = f"{self.BASE_URL}/api/v1/search"
         self.session = requests.Session()
         self.session.headers.update({
@@ -77,6 +77,10 @@ class ProwlarrClient:
             info_hash = res.get("infoHash", "")
             
             if not info_hash:
+                continue
+
+            # V1.4.6-Fix: Exclude garbage releases (HDTS, WEBSCREENER, etc.)
+            if re.search(r'hdts|ts|tc|telecine|telesync|screener|scr|webscreener', title, re.IGNORECASE):
                 continue
 
             # Resolution Mapping (Prowlarr API -> Torrentio Semantics)

@@ -764,6 +764,9 @@ func (d *VirtualDirNode) Unlink(ctx context.Context, name string) syscall.Errno 
 		return ToErrno(err)
 	}
 
+	// V1.4.6-Fix: Remove from Python episode registry in real-time
+	RemoveFromRegistry(fullPath)
+
 	// V140: Invalidate directory cache
 	globalDirCache.Delete(d.physicalPath)
 
@@ -2921,6 +2924,9 @@ func main() {
 
 	// V256: Initialize disk warmup cache after settings are loaded
 	InitDiskWarmup()
+
+	// V1.4.6-Fix: Self-healing registry watchdog (remove ghosts every 24h)
+	go StartRegistryWatchdog(backgroundStopChan)
 
 	// V228: Launch NAT-PMP sidecar (independent of FUSE, uses backgroundStopChan)
 	go natpmpLoop(backgroundStopChan, globalConfig.NatPMP, logger)

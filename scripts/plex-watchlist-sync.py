@@ -61,7 +61,7 @@ PLEX_WATCHLIST_URL = "https://discover.provider.plex.tv/library/sections/watchli
 BYTES_PER_GB = 1_073_741_824
 
 # Quality thresholds (mirrored from gostorm-sync-complete.py)
-MOVIE_4K_MIN_GB    = 10
+MOVIE_4K_MIN_GB    = 9
 MOVIE_4K_MAX_GB    = 50
 MOVIE_1080P_MIN_GB = 6
 MOVIE_1080P_MAX_GB = 20

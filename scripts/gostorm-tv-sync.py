@@ -1437,7 +1437,7 @@ class GoStormTV:
         active_hashes = {(t.get('hash') or '').lower() for t in torrents if t.get('hash')}
 
         rehydrated = 0
-        MAX_REHYDRATE_PER_RUN = 100  # Limit to prevent GoStorm saturation
+        # V1.4.6-Fix: Removed limit to allow full self-healing in a single run
 
         if not os.path.exists(self.TV_DIR):
             return
@@ -1445,16 +1445,9 @@ class GoStormTV:
         self.log("INFO", "Scanning for missing torrents to rehydrate...")
 
         for root, _, files in os.walk(self.TV_DIR):
-            if rehydrated >= MAX_REHYDRATE_PER_RUN:
-                self.log("INFO", f"Reached limit of {MAX_REHYDRATE_PER_RUN} rehydrations, stopping scan.")
-                break
-
             for filename in files:
                 if not filename.lower().endswith('.mkv'):
                     continue
-
-                if rehydrated >= MAX_REHYDRATE_PER_RUN:
-                    break
 
                 filepath = os.path.join(root, filename)
                 try:
@@ -1480,7 +1473,7 @@ class GoStormTV:
 
                     # Rehydrate with fresh magnet (new trackers)
                     if magnet_line.startswith('magnet:?'):
-                        self.log("INFO", f"Rehydrating ({rehydrated+1}/{MAX_REHYDRATE_PER_RUN}): {filename}...")
+                        self.log("INFO", f"Rehydrating #{rehydrated+1}: {filename}...")
                         # Rebuild magnet with dynamic trackers
                         fresh_magnet = self._build_magnet(hash_val)
                         if self._ts_add_torrent(fresh_magnet, filename):
