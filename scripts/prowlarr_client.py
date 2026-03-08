@@ -13,7 +13,7 @@ from typing import List, Dict, Any, Optional
 class ProwlarrClient:
     def __init__(self):
         # Configuration - Set to True to use Prowlarr, False to use Torrentio only
-        self.ENABLED = True
+        self.ENABLED = False
         
         self.API_KEY = "<YOUR-API-KEY>"
         self.BASE_URL = "http://<YOUR-IP>:9696"
