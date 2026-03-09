@@ -10,6 +10,27 @@ import (
 	"time"
 )
 
+// DailyJobConfig: task that can run on specific days of the week.
+// DaysOfWeek uses JS convention: 0=Sunday … 6=Saturday.
+type DailyJobConfig struct {
+	Enabled    bool  `json:"enabled"`
+	DaysOfWeek []int `json:"days_of_week"` // 0=Sun, 1=Mon, …, 6=Sat
+	Hour       int   `json:"hour"`
+	Minute     int   `json:"minute"`
+}
+
+type WatchlistSyncConfig struct {
+	Enabled       bool `json:"enabled"`
+	IntervalHours int  `json:"interval_hours"` // 1,2,3,4,6,8,12,24
+}
+
+type SchedulerConfig struct {
+	Enabled       bool                `json:"enabled"`
+	MoviesSync    DailyJobConfig      `json:"movies_sync"`
+	TVSync        DailyJobConfig      `json:"tv_sync"`
+	WatchlistSync WatchlistSyncConfig `json:"watchlist_sync"`
+}
+
 // Config holds all configurable parameters for the FUSE proxy
 type Config struct {
 	// --- Internal / Derived Fields ---
@@ -109,6 +130,9 @@ type Config struct {
 		APIKey  string `json:"api_key"`
 		URL     string `json:"url"`
 	} `json:"prowlarr"`
+
+	// --- Built-in Sync Scheduler ---
+	Scheduler SchedulerConfig `json:"scheduler"`
 }
 
 // LoadConfig loads configuration from environment variables with defaults
@@ -142,6 +166,13 @@ func LoadConfig() Config {
 		MaxCacheEntries:         10000,
 		DiskWarmupQuotaGB:       32,
 		WarmupHeadSizeMB:        64,
+
+		Scheduler: SchedulerConfig{
+			Enabled:    false, // off by default — won't break installs using cron
+			MoviesSync: DailyJobConfig{Enabled: true, DaysOfWeek: []int{1, 4}, Hour: 3, Minute: 0},
+			TVSync:     DailyJobConfig{Enabled: true, DaysOfWeek: []int{3, 5}, Hour: 4, Minute: 0},
+			WatchlistSync: WatchlistSyncConfig{Enabled: true, IntervalHours: 1},
+		},
 
 		GoStormBaseURL: "http://127.0.0.1:8090",
 		AIURL:          "http://127.0.0.1:8085", // Default Pi internal AI port (V1.4.5)

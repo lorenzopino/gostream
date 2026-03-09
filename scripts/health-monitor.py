@@ -19,7 +19,7 @@ import subprocess
 import threading
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
@@ -65,6 +65,9 @@ SYNC_SCRIPT = os.path.join(_scripts_dir, 'gostorm-sync-complete.py')
 SYNC_LOG = os.path.join(LOGS_DIR, 'gostorm-debug.log')
 TV_SYNC_SCRIPT = os.path.join(_scripts_dir, 'gostorm-tv-sync.py')
 TV_SYNC_LOG = os.path.join(LOGS_DIR, 'gostorm-tv-sync.log')
+WATCHLIST_SYNC_SCRIPT = os.path.join(_scripts_dir, 'plex-watchlist-sync.py')
+WATCHLIST_SYNC_LOG = os.path.join(LOGS_DIR, 'watchlist-sync.log')
+SCHEDULER_STATE_FILE = os.path.join(STATE_DIR, 'scheduler_state.json')
 
 # TMDB API for movie info
 TMDB_API_KEY = _cfg.get('tmdb_api_key', '')
@@ -140,6 +143,19 @@ tv_sync_state: Dict[str, Any] = {
     "last_run": None,
     "last_status": None,
     "process": None
+}
+
+# Watchlist Sync state
+watchlist_sync_state: Dict[str, Any] = {
+    "running": False, "pid": None, "started_at": None,
+    "last_run": None, "last_status": None, "process": None
+}
+
+# Scheduler runtime (persisted to SCHEDULER_STATE_FILE)
+scheduler_runtime: Dict[str, Any] = {
+    "movies_sync":    {"next_run": None, "last_triggered": None},
+    "tv_sync":        {"next_run": None, "last_triggered": None},
+    "watchlist_sync": {"next_run": None, "last_triggered": None},
 }
 
 # TMDB cache: hash -> {title, poster, year}
@@ -1009,6 +1025,7 @@ def collector_loop() -> None:
             check_plex()
             check_sync_status()
             check_tv_sync_status()
+            check_watchlist_sync_status()
             health_data["last_update"] = datetime.now().isoformat()
         except Exception as e:
             logger.error(f"Collector error: {e}")
@@ -1273,6 +1290,203 @@ def stop_tv_sync() -> Dict[str, Any]:
         return {"status": "ok", "message": "TV Sync killed"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# Watchlist Sync Management Functions
+
+def check_watchlist_sync_status() -> None:
+    """Check if watchlist sync process is still running."""
+    if watchlist_sync_state["process"] is not None:
+        poll = watchlist_sync_state["process"].poll()
+        if poll is not None:
+            watchlist_sync_state["running"] = False
+            watchlist_sync_state["last_run"] = datetime.now().isoformat()
+            watchlist_sync_state["last_status"] = "success" if poll == 0 else "error"
+            watchlist_sync_state["process"] = None
+            watchlist_sync_state["pid"] = None
+            watchlist_sync_state["started_at"] = None
+            logger.info(f"Watchlist Sync finished with status: {watchlist_sync_state['last_status']}")
+
+
+def start_watchlist_sync() -> Dict[str, Any]:
+    """Start the watchlist sync script in background."""
+    if watchlist_sync_state["running"]:
+        return {"status": "error", "message": "Watchlist Sync already running"}
+
+    if not os.path.exists(WATCHLIST_SYNC_SCRIPT):
+        return {"status": "error", "message": "Watchlist Sync script not found"}
+
+    try:
+        log_file = open(WATCHLIST_SYNC_LOG, "a")
+        process = subprocess.Popen(
+            ["python3", WATCHLIST_SYNC_SCRIPT],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True
+        )
+
+        watchlist_sync_state["running"] = True
+        watchlist_sync_state["pid"] = process.pid
+        watchlist_sync_state["started_at"] = datetime.now().isoformat()
+        watchlist_sync_state["process"] = process
+
+        logger.info(f"Watchlist Sync started with PID {process.pid}")
+        return {"status": "ok", "message": "Watchlist Sync started", "pid": process.pid}
+    except Exception as e:
+        logger.error(f"Failed to start watchlist sync: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def stop_watchlist_sync() -> Dict[str, Any]:
+    """Stop the running watchlist sync process."""
+    if not watchlist_sync_state["running"] or watchlist_sync_state["process"] is None:
+        return {"status": "error", "message": "No watchlist sync running"}
+
+    try:
+        watchlist_sync_state["process"].terminate()
+        watchlist_sync_state["process"].wait(timeout=5)
+        watchlist_sync_state["running"] = False
+        watchlist_sync_state["process"] = None
+        watchlist_sync_state["pid"] = None
+        watchlist_sync_state["started_at"] = None
+        watchlist_sync_state["last_status"] = "stopped"
+        logger.info("Watchlist Sync stopped by user")
+        return {"status": "ok", "message": "Watchlist Sync stopped"}
+    except subprocess.TimeoutExpired:
+        watchlist_sync_state["process"].kill()
+        return {"status": "ok", "message": "Watchlist Sync killed"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# =============================================================================
+# Built-in Scheduler
+# =============================================================================
+
+def load_scheduler_state() -> None:
+    """Load persisted scheduler runtime state from disk."""
+    try:
+        if os.path.exists(SCHEDULER_STATE_FILE):
+            with open(SCHEDULER_STATE_FILE, encoding='utf-8') as f:
+                saved = json.load(f)
+            for key in scheduler_runtime:
+                if key in saved:
+                    scheduler_runtime[key].update(saved[key])
+    except Exception as e:
+        logger.warning(f"Could not load scheduler state: {e}")
+
+
+def save_scheduler_state() -> None:
+    """Persist scheduler runtime state to disk."""
+    try:
+        os.makedirs(os.path.dirname(SCHEDULER_STATE_FILE), exist_ok=True)
+        with open(SCHEDULER_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(scheduler_runtime, f)
+    except Exception as e:
+        logger.warning(f"Could not save scheduler state: {e}")
+
+
+def _js_weekday(dt: datetime) -> int:
+    """Convert Python isoweekday (1=Mon, 7=Sun) to JS convention (0=Sun, 1=Mon, …, 6=Sat)."""
+    return dt.isoweekday() % 7
+
+
+def _should_run_daily(now: datetime, days: list, hour: int, minute: int,
+                      last_triggered: Optional[str]) -> bool:
+    """True if the scheduled time has passed within the last 2 minutes AND the job hasn't already run today."""
+    if _js_weekday(now) not in days:
+        return False
+    scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    delta = (now - scheduled).total_seconds()
+    if not (0 <= delta < 120):  # 2-minute window: handles poll jitter and late starts
+        return False
+    if last_triggered:
+        last_dt = datetime.fromisoformat(last_triggered)
+        if last_dt.date() == now.date():
+            return False
+    return True
+
+
+def _should_run_interval(now: datetime, interval_hours: int,
+                         last_triggered: Optional[str]) -> bool:
+    if not last_triggered:
+        return True
+    last_dt = datetime.fromisoformat(last_triggered)
+    return (now - last_dt).total_seconds() >= interval_hours * 3600
+
+
+def _compute_next_daily(now: datetime, days: list, hour: int, minute: int) -> Optional[str]:
+    """Return ISO string of next scheduled daily run, or None if no days configured."""
+    if not days:
+        return None
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    for offset in range(8):
+        d = candidate + timedelta(days=offset)
+        if _js_weekday(d) in days and d > now:
+            return d.isoformat()
+    return None
+
+
+def _compute_next_interval(last_triggered: Optional[str], interval_hours: int) -> Optional[str]:
+    base = datetime.fromisoformat(last_triggered) if last_triggered else datetime.now()
+    return (base + timedelta(hours=interval_hours)).isoformat()
+
+
+def scheduler_loop() -> None:
+    """Background thread: checks config every minute and fires sync jobs on schedule."""
+    load_scheduler_state()
+    while True:
+        try:
+            cfg = _load_gostream_config()
+            sched = cfg.get('scheduler', {})
+
+            if not sched.get('enabled', False):
+                time.sleep(60)
+                continue
+
+            now = datetime.now()
+
+            # Movies Sync
+            ms = sched.get('movies_sync', {})
+            if ms.get('enabled') and not sync_state['running']:
+                if _should_run_daily(now, ms.get('days_of_week', []),
+                                     ms.get('hour', 3), ms.get('minute', 0),
+                                     scheduler_runtime['movies_sync']['last_triggered']):
+                    start_sync()
+                    scheduler_runtime['movies_sync']['last_triggered'] = now.isoformat()
+                    save_scheduler_state()
+
+            # TV Sync
+            ts = sched.get('tv_sync', {})
+            if ts.get('enabled') and not tv_sync_state['running']:
+                if _should_run_daily(now, ts.get('days_of_week', []),
+                                     ts.get('hour', 4), ts.get('minute', 0),
+                                     scheduler_runtime['tv_sync']['last_triggered']):
+                    start_tv_sync()
+                    scheduler_runtime['tv_sync']['last_triggered'] = now.isoformat()
+                    save_scheduler_state()
+
+            # Watchlist Sync
+            ws = sched.get('watchlist_sync', {})
+            if ws.get('enabled') and not watchlist_sync_state['running']:
+                if _should_run_interval(now, ws.get('interval_hours', 1),
+                                        scheduler_runtime['watchlist_sync']['last_triggered']):
+                    start_watchlist_sync()
+                    scheduler_runtime['watchlist_sync']['last_triggered'] = now.isoformat()
+                    save_scheduler_state()
+
+            # Update next_run fields
+            scheduler_runtime['movies_sync']['next_run'] = _compute_next_daily(
+                now, ms.get('days_of_week', []), ms.get('hour', 3), ms.get('minute', 0))
+            scheduler_runtime['tv_sync']['next_run'] = _compute_next_daily(
+                now, ts.get('days_of_week', []), ts.get('hour', 4), ts.get('minute', 0))
+            scheduler_runtime['watchlist_sync']['next_run'] = _compute_next_interval(
+                scheduler_runtime['watchlist_sync']['last_triggered'],
+                ws.get('interval_hours', 1))
+
+        except Exception as e:
+            logger.error(f"Scheduler error: {e}")
+        time.sleep(60)
 
 
 # =============================================================================
@@ -1621,6 +1835,56 @@ async def api_tv_sync_start() -> JSONResponse:
 async def api_tv_sync_stop() -> JSONResponse:
     """Stop TV sync script."""
     result = stop_tv_sync()
+    status_code = 200 if result["status"] == "ok" else 400
+    return JSONResponse(result, status_code=status_code)
+
+
+@app.get("/api/scheduler")
+async def api_scheduler_status() -> JSONResponse:
+    """Get scheduler runtime status for all sync jobs."""
+    return JSONResponse({
+        "movies_sync": {
+            **scheduler_runtime["movies_sync"],
+            "running": sync_state["running"],
+            "last_run": sync_state["last_run"],
+        },
+        "tv_sync": {
+            **scheduler_runtime["tv_sync"],
+            "running": tv_sync_state["running"],
+            "last_run": tv_sync_state["last_run"],
+        },
+        "watchlist_sync": {
+            **scheduler_runtime["watchlist_sync"],
+            "running": watchlist_sync_state["running"],
+            "last_run": watchlist_sync_state["last_run"],
+        },
+    })
+
+
+@app.get("/api/watchlist-sync")
+async def api_watchlist_sync_status() -> JSONResponse:
+    """Get watchlist sync status."""
+    return JSONResponse({
+        "running": watchlist_sync_state["running"],
+        "pid": watchlist_sync_state["pid"],
+        "started_at": watchlist_sync_state["started_at"],
+        "last_run": watchlist_sync_state["last_run"],
+        "last_status": watchlist_sync_state["last_status"],
+    })
+
+
+@app.post("/api/watchlist-sync/start")
+async def api_watchlist_sync_start() -> JSONResponse:
+    """Start watchlist sync script."""
+    result = start_watchlist_sync()
+    status_code = 200 if result["status"] == "ok" else 400
+    return JSONResponse(result, status_code=status_code)
+
+
+@app.post("/api/watchlist-sync/stop")
+async def api_watchlist_sync_stop() -> JSONResponse:
+    """Stop watchlist sync script."""
+    result = stop_watchlist_sync()
     status_code = 200 if result["status"] == "ok" else 400
     return JSONResponse(result, status_code=status_code)
 
@@ -2576,6 +2840,10 @@ if __name__ == "__main__":
     # Start collector thread
     collector_thread = threading.Thread(target=collector_loop, daemon=True, name="collector")
     collector_thread.start()
+
+    # Start scheduler thread
+    sched_thread = threading.Thread(target=scheduler_loop, daemon=True, name="scheduler")
+    sched_thread.start()
 
     logger.info(f"Starting Health Monitor on port {PORT}")
     logger.info(f"Dashboard: http://0.0.0.0:{PORT}")

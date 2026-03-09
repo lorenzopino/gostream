@@ -945,7 +945,7 @@ setup_sudoers() {
 setup_cron_jobs() {
     print_info "Setting up cron jobs for sync scripts..."
 
-    if ! ask_yn "Set up cron jobs for sync scripts?" "y"; then
+    if ! ask_yn "Set up system cron jobs for sync scripts? (Skip if you plan to use the built-in Scheduler from the control panel)" "n"; then
         print_info "Skipping cron job setup."
         return 0
     fi

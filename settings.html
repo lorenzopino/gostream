@@ -165,7 +165,10 @@
         .form-section.advanced {
             display: none;
         }
-        .hidden-permanently { display: none !important; }
+
+        .hidden-permanently {
+            display: none !important;
+        }
 
         .form-section.advanced.show {
             display: block;
@@ -467,6 +470,53 @@
             background: #14532d;
             color: #86efac;
         }
+
+        .day-picker {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: 6px;
+        }
+
+        .day-pill {
+            padding: 4px 10px;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            font-size: 12px;
+            user-select: none;
+            background: transparent;
+            color: var(--text-secondary);
+            transition: all .15s;
+        }
+
+        .day-pill.selected {
+            background: var(--primary);
+            color: #fff;
+            border-color: var(--primary);
+        }
+
+        .day-pill.conflict {
+            opacity: .35;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+
+        .sched-meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin: 8px 0 10px;
+            min-height: 16px;
+        }
+
+        #sched-body {
+            transition: opacity .2s;
+        }
+
+        #sched-body.disabled {
+            opacity: .4;
+            pointer-events: none;
+        }
     </style>
 </head>
 
@@ -674,7 +724,8 @@
                             <label class="switch"><input type="checkbox" name="prowlarr_enabled"
                                     data-nested="prowlarr.enabled"><span class="slider"></span></label>
                         </div>
-                        <div class="hint" style="margin-bottom: 12px;">Use Prowlarr as indexer; if disabled, uses Torrentio</div>
+                        <div class="hint" style="margin-bottom: 12px;">Use Prowlarr as indexer; if disabled, uses
+                            Torrentio</div>
                         <div class="form-grid">
                             <div class="form-group" style="grid-column: 1 / -1;">
                                 <label>API Key</label>
@@ -722,184 +773,279 @@
                 </form>
             </div>
 
-            <!-- CORE SETTINGS (GoStorm) -->
-            <div class="card">
-                <h2>⚡ GoStorm Engine<span class="live-badge running">Live</span></h2>
-                <form id="gostorm-form">
-                    <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px;">
-                        <div>
-                            <div class="form-section">
-                                <div class="form-section-title">Cache & Data</div>
-                                <div class="form-group">
-                                    <label>Cache Size (MB)</label>
-                                    <div class="range-group">
-                                        <input type="range" name="cacheSize" min="64" max="256" step="16">
-                                        <span class="range-val" data-for="cacheSize">64</span>
+            <!-- Right column: GoStorm Engine + Sync Scheduler -->
+            <div style="display:flex;flex-direction:column;gap:24px;">
+                <div class="card">
+                    <h2>⚡ GoStorm Engine<span class="live-badge running">Live</span></h2>
+                    <form id="gostorm-form">
+                        <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px;">
+                            <div>
+                                <div class="form-section">
+                                    <div class="form-section-title">Cache & Data</div>
+                                    <div class="form-group">
+                                        <label>Cache Size (MB)</label>
+                                        <div class="range-group">
+                                            <input type="range" name="cacheSize" min="64" max="256" step="16">
+                                            <span class="range-val" data-for="cacheSize">64</span>
+                                        </div>
+                                        <div class="hint">GoStorm piece buffer, feeds raCache (recommended: 128 MB)
+                                        </div>
                                     </div>
-                                    <div class="hint">GoStorm piece buffer, feeds raCache (recommended: 128 MB)</div>
+                                    <div class="form-group">
+                                        <label>Readahead Cache (%)</label>
+                                        <div class="range-group">
+                                            <input type="range" name="readerReadAHead" min="10" max="95" step="5">
+                                            <span class="range-val" data-for="readerReadAHead">50</span>
+                                        </div>
+                                        <div class="hint">% of CacheSize for piece readahead (recommended: 75%)</div>
+                                        <div id="readahead-metric" class="switch-item"
+                                            style="margin-top:30px; font-size:10px;"></div>
+                                    </div>
                                 </div>
-                                <div class="form-group">
-                                    <label>Readahead Cache (%)</label>
-                                    <div class="range-group">
-                                        <input type="range" name="readerReadAHead" min="10" max="95" step="5">
-                                        <span class="range-val" data-for="readerReadAHead">50</span>
+
+                                <div class="form-section">
+                                    <div class="form-section-title">Warmup & SSD</div>
+                                    <div class="form-group">
+                                        <div class="switch-item" style="margin-bottom: 8px; font-weight: 500;">
+                                            <span>Use Warmup Cache</span>
+                                            <label class="switch"><input type="checkbox" name="useDisk"><span
+                                                    class="slider"></span></label>
+                                        </div>
+                                        <input type="text" name="torrentsSavePath">
+                                        <div class="hint">Warmup files path</div>
                                     </div>
-                                    <div class="hint">% of CacheSize for piece readahead (recommended: 75%)</div>
-                                    <div id="readahead-metric" class="switch-item"
-                                        style="margin-top:30px; font-size:10px;"></div>
+                                    <div class="form-grid">
+                                        <div class="form-group">
+                                            <label>SSD Quota (GB)</label>
+                                            <input type="number" name="disk_warmup_quota_gb">
+                                            <div class="hint">SSD space for warmup cache</div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Head Warmup (MB)</label>
+                                            <input type="number" name="warmup_head_size_mb">
+                                            <div class="hint">Per-file head cache on SSD</div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="form-section">
+                                    <div class="form-section-title">Swarm Limits</div>
+                                    <div class="form-group">
+                                        <label>Connections Limit</label>
+                                        <input type="number" name="connectionsLimit" data-warn-above="50">
+                                        <div class="hint">Max peers per torrent</div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>DL Rate (KB/s)</label>
+                                        <input type="number" name="downloadRateLimit" min="0"
+                                            placeholder="0 = unlimited">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>UP Rate (KB/s)</label>
+                                        <input type="number" name="uploadRateLimit" min="0" placeholder="0 = unlimited">
+                                    </div>
+                                    <div class="form-group advanced">
+                                        <label>Disconnect Timeout (s)</label>
+                                        <input type="number" name="torrentDisconnectTimeout">
+                                        <div class="hint">Timeout for inactive torrent disconnection</div>
+                                    </div>
                                 </div>
                             </div>
 
-                            <div class="form-section">
-                                <div class="form-section-title">Warmup & SSD</div>
-                                <div class="form-group">
-                                    <div class="switch-item" style="margin-bottom: 8px; font-weight: 500;">
-                                        <span>Use Warmup Cache</span>
-                                        <label class="switch"><input type="checkbox" name="useDisk"><span
-                                                class="slider"></span></label>
+                            <div>
+                                <div class="form-section">
+                                    <div class="form-section-title">Network & Protocol</div>
+                                    <div class="form-group advanced">
+                                        <label>Listen Port</label>
+                                        <input type="number" name="peersListenPort" id="peersListenPort">
+                                        <div class="hint" id="peersListenPort-hint">Peer port (0 = random)</div>
                                     </div>
-                                    <input type="text" name="torrentsSavePath">
-                                    <div class="hint">Warmup files path</div>
+                                    <div class="form-group advanced">
+                                        <label>Retrackers Mode</label>
+                                        <select name="retrackersMode">
+                                            <option value="0">Don't add</option>
+                                            <option value="1">Add</option>
+                                            <option value="2">Remove</option>
+                                            <option value="3">Replace</option>
+                                        </select>
+                                        <div class="hint">Manage retracker in torrents</div>
+                                    </div>
+                                    <div class="switch-grid">
+                                        <div class="switch-item">
+                                            <div><span>Enable IPv6</span>
+                                                <div class="hint">Enable IPv6 support</div>
+                                            </div><label class="switch"><input type="checkbox" name="enableIPv6"><span
+                                                    class="slider"></span></label>
+                                        </div>
+                                        <div class="switch-item">
+                                            <div><span>Enable DHT</span>
+                                                <div class="hint">Peer discovery without tracker</div>
+                                            </div><label class="switch"><input type="checkbox" name="disableDHT"><span
+                                                    class="slider"></span></label>
+                                        </div>
+                                        <div class="switch-item">
+                                            <div><span>Enable PEX</span>
+                                                <div class="hint">Peer exchange between clients</div>
+                                            </div><label class="switch"><input type="checkbox" name="disablePEX"><span
+                                                    class="slider"></span></label>
+                                        </div>
+                                        <div class="switch-item">
+                                            <div><span>Enable TCP</span>
+                                                <div class="hint">Protocol TCP for peers</div>
+                                            </div><label class="switch"><input type="checkbox" name="disableTCP"><span
+                                                    class="slider"></span></label>
+                                        </div>
+                                        <div class="switch-item">
+                                            <div><span>Enable uTP</span>
+                                                <div class="hint">Protocol uTP (UDP)</div>
+                                            </div><label class="switch"><input type="checkbox" name="disableUTP"><span
+                                                    class="slider"></span></label>
+                                        </div>
+                                        <div class="switch-item">
+                                            <div><span>Enable Upload</span>
+                                                <div class="hint">Allow sending data to peers</div>
+                                            </div><label class="switch"><input type="checkbox"
+                                                    name="disableUpload"><span class="slider"></span></label>
+                                        </div>
+                                        <div class="switch-item">
+                                            <div><span>Force Encrypt</span>
+                                                <div class="hint">Force encrypted connections</div>
+                                            </div><label class="switch"><input type="checkbox" name="forceEncrypt"><span
+                                                    class="slider"></span></label>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div class="form-grid">
-                                    <div class="form-group">
-                                        <label>SSD Quota (GB)</label>
-                                        <input type="number" name="disk_warmup_quota_gb">
-                                        <div class="hint">SSD space for warmup cache</div>
-                                    </div>
-                                    <div class="form-group">
-                                        <label>Head Warmup (MB)</label>
-                                        <input type="number" name="warmup_head_size_mb">
-                                        <div class="hint">Per-file head cache on SSD</div>
-                                    </div>
-                                </div>
-                            </div>
 
-                            <div class="form-section">
-                                <div class="form-section-title">Swarm Limits</div>
-                                <div class="form-group">
-                                    <label>Connections Limit</label>
-                                    <input type="number" name="connectionsLimit" data-warn-above="50">
-                                    <div class="hint">Max peers per torrent</div>
-                                </div>
-                                <div class="form-group">
-                                    <label>DL Rate (KB/s)</label>
-                                    <input type="number" name="downloadRateLimit" min="0" placeholder="0 = unlimited">
-                                </div>
-                                <div class="form-group">
-                                    <label>UP Rate (KB/s)</label>
-                                    <input type="number" name="uploadRateLimit" min="0" placeholder="0 = unlimited">
-                                </div>
-                                <div class="form-group advanced">
-                                    <label>Disconnect Timeout (s)</label>
-                                    <input type="number" name="torrentDisconnectTimeout">
-                                    <div class="hint">Timeout for inactive torrent disconnection</div>
+                                <div class="form-section">
+                                    <div class="form-section-title">Behaviors</div>
+                                    <div class="switch-grid">
+                                        <div class="switch-item">
+                                            <div><span>Smart Responsive Mode</span>
+                                                <div class="hint">Enables FAST mode: serves data without waiting for
+                                                    full
+                                                    piece verification.
+                                                    Pair with Adaptive Shield to auto-protect against corruption.</div>
+                                            </div><label class="switch"><input type="checkbox" name="responsiveMode"
+                                                    onchange="updateAdaptiveShieldState()"><span
+                                                    class="slider"></span></label>
+                                        </div>
+
+                                        <div class="switch-item">
+                                            <div><span>Adaptive Shield <span
+                                                        style="display:inline-block;font-size:9px;font-weight:600;letter-spacing:.4px;padding:1px 5px;border-radius:3px;background:rgba(245,158,11,.15);color:#d97706;vertical-align:middle;margin-left:4px;">EXPERIMENTAL</span></span>
+                                                <div class="hint">Auto-switches to Strict Mode when piece corruption is
+                                                    detected.<br>Disable only if seeders are stable and shield causes
+                                                    unnecessary slowdowns.</div>
+                                            </div><label class="switch"><input type="checkbox"
+                                                    name="adaptiveShield"><span class="slider"></span></label>
+                                        </div>
+
+                                        <div class="switch-item advanced">
+                                            <div><span>Debug Log</span>
+                                                <div class="hint">Enable detailed server logging</div>
+                                            </div><label class="switch"><input type="checkbox" name="enableDebug"><span
+                                                    class="slider"></span></label>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
 
+                        <button type="submit" class="btn btn-primary">Apply Settings</button>
+                        <div id="gostorm-status" class="status-msg"></div>
+                    </form>
+                </div>
+
+                <!-- SYNC SCHEDULER -->
+                <div class="card">
+                    <h2>🗓 MKV Creation Scheduler</h2>
+                    <p class="hint" style="margin-bottom:14px;">Automates Movies, TV and Watchlist sync jobs for .mkv
+                        creation. Active checks run every minute; jobs fire only at the configured time.</p>
+                    <p class="hint" style="margin-bottom:14px;color: rgb(180, 83, 9);">Attention: After the first run of
+                        the Movie and TV
+                        library population scripts, hundreds of .mkv
+                        files will be created. Plex will then begin scanning these files to populate its UI. During this
+                        initial scan, playback will be extremely slow or may time out. This is because Plex opens and
+                        closes files hundreds of times during analysis, which congests the BitTorrent engine. Please
+                        wait for Plex to complete its scan before starting any streams. Enjoy!</p>
+
+                    <div class="switch-item" style="margin-bottom:16px;">
                         <div>
-                            <div class="form-section">
-                                <div class="form-section-title">Network & Protocol</div>
-                                <div class="form-group advanced">
-                                    <label>Listen Port</label>
-                                    <input type="number" name="peersListenPort" id="peersListenPort">
-                                    <div class="hint" id="peersListenPort-hint">Peer port (0 = random)</div>
-                                </div>
-                                <div class="form-group advanced">
-                                    <label>Retrackers Mode</label>
-                                    <select name="retrackersMode">
-                                        <option value="0">Don't add</option>
-                                        <option value="1">Add</option>
-                                        <option value="2">Remove</option>
-                                        <option value="3">Replace</option>
-                                    </select>
-                                    <div class="hint">Manage retracker in torrents</div>
-                                </div>
-                                <div class="switch-grid">
-                                    <div class="switch-item">
-                                        <div><span>Enable IPv6</span>
-                                            <div class="hint">Enable IPv6 support</div>
-                                        </div><label class="switch"><input type="checkbox" name="enableIPv6"><span
-                                                class="slider"></span></label>
-                                    </div>
-                                    <div class="switch-item">
-                                        <div><span>Enable DHT</span>
-                                            <div class="hint">Peer discovery without tracker</div>
-                                        </div><label class="switch"><input type="checkbox" name="disableDHT"><span
-                                                class="slider"></span></label>
-                                    </div>
-                                    <div class="switch-item">
-                                        <div><span>Enable PEX</span>
-                                            <div class="hint">Peer exchange between clients</div>
-                                        </div><label class="switch"><input type="checkbox" name="disablePEX"><span
-                                                class="slider"></span></label>
-                                    </div>
-                                    <div class="switch-item">
-                                        <div><span>Enable TCP</span>
-                                            <div class="hint">Protocol TCP for peers</div>
-                                        </div><label class="switch"><input type="checkbox" name="disableTCP"><span
-                                                class="slider"></span></label>
-                                    </div>
-                                    <div class="switch-item">
-                                        <div><span>Enable uTP</span>
-                                            <div class="hint">Protocol uTP (UDP)</div>
-                                        </div><label class="switch"><input type="checkbox" name="disableUTP"><span
-                                                class="slider"></span></label>
-                                    </div>
-                                    <div class="switch-item">
-                                        <div><span>Enable Upload</span>
-                                            <div class="hint">Allow sending data to peers</div>
-                                        </div><label class="switch"><input type="checkbox" name="disableUpload"><span
-                                                class="slider"></span></label>
-                                    </div>
-                                    <div class="switch-item">
-                                        <div><span>Force Encrypt</span>
-                                            <div class="hint">Force encrypted connections</div>
-                                        </div><label class="switch"><input type="checkbox" name="forceEncrypt"><span
-                                                class="slider"></span></label>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="form-section">
-                                <div class="form-section-title">Behaviors</div>
-                                <div class="switch-grid">
-                                    <div class="switch-item">
-                                        <div><span>Smart Responsive Mode</span>
-                                            <div class="hint">Enables FAST mode: serves data without waiting for full
-                                                piece verification.
-                                                Pair with Adaptive Shield to auto-protect against corruption.</div>
-                                        </div><label class="switch"><input type="checkbox" name="responsiveMode"
-                                                onchange="updateAdaptiveShieldState()"><span
-                                                class="slider"></span></label>
-                                    </div>
-
-                                    <div class="switch-item">
-                                        <div><span>Adaptive Shield <span
-                                                    style="display:inline-block;font-size:9px;font-weight:600;letter-spacing:.4px;padding:1px 5px;border-radius:3px;background:rgba(245,158,11,.15);color:#d97706;vertical-align:middle;margin-left:4px;">EXPERIMENTAL</span></span>
-                                            <div class="hint">Auto-switches to Strict Mode when piece corruption is
-                                                detected.<br>Disable only if seeders are stable and shield causes
-                                                unnecessary slowdowns.</div>
-                                        </div><label class="switch"><input type="checkbox" name="adaptiveShield"><span
-                                                class="slider"></span></label>
-                                    </div>
-
-                                    <div class="switch-item advanced">
-                                        <div><span>Debug Log</span>
-                                            <div class="hint">Enable detailed server logging</div>
-                                        </div><label class="switch"><input type="checkbox" name="enableDebug"><span
-                                                class="slider"></span></label>
-                                    </div>
-                                </div>
-                            </div>
+                            <span>Enable Scheduler</span>
+                            <div class="hint">Changes apply within 1 minute.</div>
                         </div>
+                        <label class="switch">
+                            <input type="checkbox" id="sched-enabled" onchange="_toggleSchedBody(this.checked)">
+                            <span class="slider"></span>
+                        </label>
                     </div>
 
-                    <button type="submit" class="btn btn-primary">Apply Settings</button>
-                    <div id="gostorm-status" class="status-msg"></div>
-                </form>
-            </div>
+                    <div id="sched-body">
+
+                        <!-- Movies Library Sync -->
+                        <div class="form-section">
+                            <div class="form-section-title">Movies Library Sync</div>
+                            <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;">
+                                <div class="form-group" style="flex:1;min-width:0;">
+                                    <label>Weekdays</label>
+                                    <div class="day-picker" id="sched-movies-days"></div>
+                                </div>
+                                <div class="form-group" style="flex-shrink:0;">
+                                    <label>Start time</label>
+                                    <input type="time" id="sched-movies-time">
+                                </div>
+                            </div>
+                            <div class="sched-meta" id="sched-movies-meta"></div>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="runSyncNow('sync')">▶ Run
+                                now</button>
+                        </div>
+
+                        <!-- TV Series Library Sync -->
+                        <div class="form-section">
+                            <div class="form-section-title">TV Series Library Sync</div>
+                            <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;">
+                                <div class="form-group" style="flex:1;min-width:0;">
+                                    <label>Weekdays</label>
+                                    <div class="day-picker" id="sched-tv-days"></div>
+                                </div>
+                                <div class="form-group" style="flex-shrink:0;">
+                                    <label>Start time</label>
+                                    <input type="time" id="sched-tv-time">
+                                </div>
+                            </div>
+                            <div class="sched-meta" id="sched-tv-meta"></div>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="runSyncNow('tv-sync')">▶ Run
+                                now</button>
+                        </div>
+
+                        <!-- Plex Watchlist Sync -->
+                        <div class="form-section">
+                            <div class="form-section-title">Plex Watchlist Sync</div>
+                            <div class="form-group">
+                                <label>Run every</label>
+                                <select id="sched-wl-interval">
+                                    <option value="1">1 hour</option>
+                                    <option value="2">2 hours</option>
+                                    <option value="3">3 hours</option>
+                                    <option value="4">4 hours</option>
+                                    <option value="6">6 hours</option>
+                                    <option value="8">8 hours</option>
+                                    <option value="12">12 hours</option>
+                                    <option value="24">24 hours</option>
+                                </select>
+                            </div>
+                            <div class="sched-meta" id="sched-wl-meta"></div>
+                            <button type="button" class="btn btn-secondary btn-sm"
+                                onclick="runSyncNow('watchlist-sync')">▶ Run now</button>
+                        </div>
+
+                    </div><!-- /#sched-body -->
+
+                    <button type="button" class="btn btn-primary" onclick="saveScheduler()">Save schedule</button>
+                    <div id="sched-save-status" class="status-msg"></div>
+                </div>
+            </div><!-- /right column wrapper -->
+
         </div>
     </div>
 
@@ -1249,6 +1395,187 @@
 
         loadEngine();
         loadCore();
+
+        // =============================================================
+        // Sync Scheduler
+        // =============================================================
+
+        const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const MONITOR_PORT = 8095;
+        const monitorBase = `http://${window.location.hostname}:${MONITOR_PORT}`;
+
+        function _toggleSchedBody(enabled) {
+            document.getElementById('sched-body').classList.toggle('disabled', !enabled);
+        }
+
+        function buildDayPicker(containerId) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            container.innerHTML = '';
+            DAY_LABELS.forEach((label, idx) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'day-pill';
+                btn.textContent = label;
+                btn.dataset.day = idx;
+                btn.addEventListener('click', () => {
+                    btn.classList.toggle('selected');
+                    _updateDayConflicts();
+                });
+                container.appendChild(btn);
+            });
+        }
+
+        function _updateDayConflicts() {
+            const moviesDays = new Set(
+                [...document.querySelectorAll('#sched-movies-days .day-pill.selected')].map(b => +b.dataset.day)
+            );
+            const tvDays = new Set(
+                [...document.querySelectorAll('#sched-tv-days .day-pill.selected')].map(b => +b.dataset.day)
+            );
+
+            document.querySelectorAll('#sched-movies-days .day-pill').forEach(btn => {
+                const day = +btn.dataset.day;
+                const conflict = tvDays.has(day) && !moviesDays.has(day);
+                btn.classList.toggle('conflict', conflict);
+                if (conflict) btn.classList.remove('selected');
+            });
+            document.querySelectorAll('#sched-tv-days .day-pill').forEach(btn => {
+                const day = +btn.dataset.day;
+                const conflict = moviesDays.has(day) && !tvDays.has(day);
+                btn.classList.toggle('conflict', conflict);
+                if (conflict) btn.classList.remove('selected');
+            });
+        }
+
+        function setDayPicker(containerId, selectedDays) {
+            document.querySelectorAll(`#${containerId} .day-pill`).forEach(btn => {
+                btn.classList.toggle('selected', selectedDays.includes(+btn.dataset.day));
+            });
+        }
+
+        function getDayPicker(containerId) {
+            return [...document.querySelectorAll(`#${containerId} .day-pill.selected`)].map(b => +b.dataset.day);
+        }
+
+        function _toTimeInput(hour, minute) {
+            return String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0');
+        }
+
+        function _timeAgo(isoStr) {
+            if (!isoStr) return null;
+            const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+            if (diff < 60) return `${diff}s ago`;
+            if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+            if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+            return `${Math.floor(diff / 86400)}d ago`;
+        }
+
+        function _renderMeta(id, rt) {
+            const el = document.getElementById(id);
+            if (!el || !rt) return;
+            const parts = [];
+            if (rt.last_run) parts.push(`Last run: ${_timeAgo(rt.last_run)}`);
+            if (rt.next_run) {
+                const diff = Math.floor((new Date(rt.next_run).getTime() - Date.now()) / 60000);
+                parts.push(diff > 0 ? `Next: in ${diff}m` : `Next: soon`);
+            }
+            if (rt.running) parts.push('<span style="color:#22c55e">● Running</span>');
+            el.innerHTML = parts.join(' &nbsp;|&nbsp; ');
+        }
+
+        async function loadScheduler() {
+            const [cfgRes, rtRes] = await Promise.all([
+                fetch('/api/config'),
+                fetch(`${monitorBase}/api/scheduler`).catch(() => null)
+            ]);
+            const cfg = await cfgRes.json();
+            const sched = cfg.scheduler || {};
+            const rt = rtRes && rtRes.ok ? await rtRes.json() : {};
+
+            document.getElementById('sched-enabled').checked = sched.enabled || false;
+            _toggleSchedBody(sched.enabled || false);
+
+            setDayPicker('sched-movies-days', sched.movies_sync?.days_of_week || []);
+            document.getElementById('sched-movies-time').value =
+                _toTimeInput(sched.movies_sync?.hour ?? 3, sched.movies_sync?.minute ?? 0);
+
+            setDayPicker('sched-tv-days', sched.tv_sync?.days_of_week || []);
+            document.getElementById('sched-tv-time').value =
+                _toTimeInput(sched.tv_sync?.hour ?? 4, sched.tv_sync?.minute ?? 0);
+
+            document.getElementById('sched-wl-interval').value =
+                sched.watchlist_sync?.interval_hours || 1;
+
+            _updateDayConflicts();
+
+            _renderMeta('sched-movies-meta', rt.movies_sync);
+            _renderMeta('sched-tv-meta', rt.tv_sync);
+            _renderMeta('sched-wl-meta', rt.watchlist_sync);
+        }
+
+        async function saveScheduler() {
+            const status = document.getElementById('sched-save-status');
+            const moviesDays = getDayPicker('sched-movies-days');
+            const tvDays = getDayPicker('sched-tv-days');
+
+            const overlap = moviesDays.filter(d => tvDays.includes(d));
+            if (overlap.length > 0) {
+                status.textContent = `✗ Days overlap between Movies and TV: ${overlap.map(d => DAY_LABELS[d]).join(', ')}`;
+                status.className = 'status-msg status-error';
+                setTimeout(() => { status.className = 'status-msg'; }, 5000);
+                return;
+            }
+
+            const moviesTime = document.getElementById('sched-movies-time').value.split(':');
+            const tvTime = document.getElementById('sched-tv-time').value.split(':');
+
+            const cfgRes = await fetch('/api/config');
+            const data = await cfgRes.json();
+
+            data.scheduler = {
+                enabled: document.getElementById('sched-enabled').checked,
+                movies_sync: {
+                    enabled: moviesDays.length > 0,
+                    days_of_week: moviesDays,
+                    hour: parseInt(moviesTime[0]) || 3,
+                    minute: parseInt(moviesTime[1]) || 0
+                },
+                tv_sync: {
+                    enabled: tvDays.length > 0,
+                    days_of_week: tvDays,
+                    hour: parseInt(tvTime[0]) || 4,
+                    minute: parseInt(tvTime[1]) || 0
+                },
+                watchlist_sync: {
+                    enabled: true,
+                    interval_hours: parseInt(document.getElementById('sched-wl-interval').value) || 1
+                }
+            };
+
+            const res = await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            status.textContent = res.ok ? '✓ Schedule saved' : '✗ Save error';
+            status.className = 'status-msg ' + (res.ok ? 'status-success' : 'status-error');
+            setTimeout(() => { status.className = 'status-msg'; }, 5000);
+        }
+
+        async function runSyncNow(type) {
+            try {
+                const res = await fetch(`${monitorBase}/api/${type}/start`, { method: 'POST' });
+                if (res.ok) setTimeout(loadScheduler, 1000);
+            } catch (e) { console.error('runSyncNow error', e); }
+        }
+
+        // Build pickers then load data
+        buildDayPicker('sched-movies-days');
+        buildDayPicker('sched-tv-days');
+        loadScheduler();
+        setInterval(loadScheduler, 30000);
+
     </script>
 </body>
 
