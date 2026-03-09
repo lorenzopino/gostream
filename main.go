@@ -1929,6 +1929,13 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 		if pos := atomic.LoadInt64(&h.lastOff); pos > 0 {
 			atomic.StoreInt64(&ps.playerOff, pos)
 		}
+		// V703: Only decrement refCount if this handle actually incremented it.
+		// Handles that didn't acquire a pump slot (h.hasSlot=false, e.g. probe/header
+		// reads) must not decrement — otherwise refCount goes negative and triggers
+		// spurious grace period timers.
+		if !h.hasSlot {
+			return 0
+		}
 		newRefs := atomic.AddInt32(&ps.refCount, -1)
 		logger.Printf("[V260] Release handle for %s (Remaining Refs: %d)", filepath.Base(h.path), newRefs)
 
