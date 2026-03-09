@@ -108,8 +108,9 @@ func (p *Piece) MarkNotComplete() error {
 		}
 	}
 
-	// Start watchdog only once
-	if shieldActive.Load() && !isWatchdogRunning.Swap(true) {
+	// Start watchdog on first corruption (count>=1) to clear pending state if no follow-up arrives.
+	// Previously gated on shieldActive, which left count=1 dangling indefinitely.
+	if count >= 1 && !isWatchdogRunning.Swap(true) {
 		go func() {
 			for {
 				time.Sleep(1 * time.Second)
