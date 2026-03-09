@@ -22,10 +22,20 @@ The sync scripts (`gostorm-sync-complete.py`, `plex-watchlist-sync.py`, `gostorm
 3. **Fallback**: If Prowlarr returns zero valid results or the API call fails, the script automatically attempts a query via the original Torrentio API.
 
 ## Configuration
-The adapter is should be configured with yur Prowlarr parameters:
-- **Prowlarr IP**: `http://<your-ip>:9696`
-- **API Key**: `your-api-key`
-- **Timeout**: `30 seconds` (Optimized for deep indexer searches).
+All parameters are read at runtime from `config.json` (co-located with the binary). No hardcoded values. Configure via the **Control Panel → Prowlarr Indexer** section, or edit `config.json` directly:
+
+```json
+"prowlarr": {
+  "enabled": true,
+  "api_key": "your-api-key",
+  "url": "http://<your-ip>:9696"
+}
+```
+
+- **`enabled`**: Set to `true` to use Prowlarr as primary indexer. If `false`, scripts go directly to Torrentio.
+- **`api_key`**: Found in Prowlarr → Settings → General → API Key.
+- **`url`**: Prowlarr base URL (no trailing slash).
+- **Timeout**: `30 seconds` (optimized for deep indexer searches).
 
 ## Validation
 - **Unit Tests**: `test_prowlarr_client.py` verifies API response parsing and Torrentio-compatible title generation.

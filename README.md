@@ -100,7 +100,17 @@ To ensure the system remains functional even when public aggregators like Torren
 
 The sync scripts implement a **Strict Fallback** logic: they first query your Prowlarr indexers using IMDB IDs for maximum precision. If no results are found locally, they automatically fall back to Torrentio.
 
-See the [Prowlarr Adapter Documentation](docs/prowlarr-adapter.md) for setup and technical details.
+**Configuration** is done via `config.json` (or the Control Panel → **Prowlarr Indexer** section):
+
+```json
+"prowlarr": {
+  "enabled": true,
+  "api_key": "your-api-key",
+  "url": "http://192.168.1.x:9696"
+}
+```
+
+See the [Prowlarr Adapter Documentation](docs/prowlarr-adapter.md) for technical details.
 
 
 ### 100% local, no subscriptions
@@ -592,8 +602,8 @@ Settings are written to `config.json` and require a **service restart**. The **R
 |-------|----------|
 | **Core & Streaming** | ReadAhead Budget (MB), Master Concurrency, Max Streaming Slots, Streaming Threshold (KB) |
 | **Paths** | Physical Source Path (Samba root), FUSE Mount Path |
-| **FUSE Timing & Buffers** | Read Buffer (KB), FUSE Block Size, Attr/Entry Timeout (s) |
-| **Cache Management** | Metadata Cache (MB), Max Cache Entries, Cleanup Interval (min) |
+| **Prowlarr Indexer** | Enable Prowlarr, API Key, URL |
+| **Media Manager (Plex)** | TMDB API Key, Plex URL, Plex Token, Movies Library ID, Series TV Library ID |
 | **Connectivity & Rescue** | GoStorm URL, Rescue Grace/Cooldown, Metrics Port, Log Level, GoStream Port, BlockList URL |
 
 ### GoStorm Engine Panel (right)
@@ -679,8 +689,12 @@ nano /home/pi/GoStream/config.json
 | `blocklist_url` | *(BT_BlockLists)* | Gzipped IP blocklist URL (24 h refresh) |
 | `plex.url` | — | Plex server URL |
 | `plex.token` | — | Plex authentication token |
-| `plex.library_id` | — | Plex movie library section ID |
+| `plex.library_id` | `0` | Plex movies library section ID |
+| `plex.tv_library_id` | `0` | Plex TV series library section ID (0 = disabled) |
 | `tmdb_api_key` | — | TMDB API key |
+| `prowlarr.enabled` | `false` | Use Prowlarr as primary indexer (falls back to Torrentio if disabled) |
+| `prowlarr.api_key` | — | Prowlarr API key (Settings → General → API Key) |
+| `prowlarr.url` | — | Prowlarr base URL (e.g. `http://192.168.1.x:9696`) |
 | `natpmp.enabled` | `false` | Enable NAT-PMP |
 | `natpmp.gateway` | — | VPN gateway IP |
 | `natpmp.vpn_interface` | `wg0` | WireGuard interface |
