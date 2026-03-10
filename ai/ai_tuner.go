@@ -35,7 +35,6 @@ var cpuUsageAvg []float64
 var cycleCounter int
 var pulseCounter int
 var peakCPUCycle float64
-var prevBuffer int
 
 const normalCycle = 60 // 300s
 const crisisCycle = 12 // 60s
@@ -204,7 +203,6 @@ func runTuningCycle(aiURL string) {
 		lastTimeout = defaultTimeout
 		pulseCounter = 0
 		peakCPUCycle = 0
-		prevBuffer = 0
 	}
 	lastActiveHash = currentHash
 
@@ -259,21 +257,6 @@ func runTuningCycle(aiURL string) {
 		}
 	}
 
-	bufDelta := 0
-	if prevBuffer > 0 {
-		bufDelta = buffer - prevBuffer
-	}
-	prevBuffer = buffer
-
-	playerState := "streaming"
-	if currSpeedMBs == 0 {
-		if bufDelta < -3 {
-			playerState = "consuming"
-		} else {
-			playerState = "paused"
-		}
-	}
-
 	currentSnap := sanitizeStr(fmt.Sprintf("[CPU:%d%% (Peak:%d%%), Buf:%d%%, Peers:%d, Speed:%.1fMB/s (%s)]",
 		int(avgCPU), int(peakCPUCycle), buffer, activeStats.ActivePeers, currSpeedMBs, speedTrendStr))
 
@@ -302,8 +285,8 @@ func runTuningCycle(aiURL string) {
 		historyPrefix = "history=" + historyStr + " "
 	}
 	prompt := fmt.Sprintf(
-		"<|im_start|>system\nTune BitTorrent parms for performace 4K Movie streaming. connections_limit MUST be between 10-60. peer_timeout_seconds MUST be between 10-60. Output JSON: {\"connections_limit\":N,\"peer_timeout_seconds\":M}<|im_end|>\n<|im_start|>user\nactual Peers in Swarm %d - %sspeed=%.0fMB/s cpu=%d%% buf=%d%% peers=%d trend=%s state=%s<|im_end|>\n<|im_start|>assistant\n",
-		activeStats.TotalPeers, historyPrefix, currSpeedMBs, int(currentCPU), buffer, activeStats.ActivePeers, speedTrendStr, playerState,
+		"<|im_start|>system\nTune BitTorrent parms for performace 4K Movie streaming. connections_limit MUST be between 10-60. peer_timeout_seconds MUST be between 10-60. Output JSON: {\"connections_limit\":N,\"peer_timeout_seconds\":M}<|im_end|>\n<|im_start|>user\nactual Peers in Swarm %d - %sspeed=%.0fMB/s cpu=%d%% buf=%d%% peers=%d trend=%s<|im_end|>\n<|im_start|>assistant\n",
+		activeStats.TotalPeers, historyPrefix, currSpeedMBs, int(currentCPU), buffer, activeStats.ActivePeers, speedTrendStr,
 	)
 	_ = contextStr
 	_ = fileSizeGB

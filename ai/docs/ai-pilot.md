@@ -205,6 +205,17 @@ Below are examples of how the AI Pilot behaves during a typical streaming sessio
 2026/03/09 22:01:14 [AI-Pilot] Optimizer applying change: Conns(50->15) Timeout(60s->15s) [Metrics: [CPU:16% (Peak:55%), Buf:98%, Peers:18, Speed:0.0MB/s (DOWN (-13.4MB/s))]]
 ```
 
+### 5b. Dynamic Optimization — Normal load (post LLM restart, cache warming)
+```text
+// First cycle after restart: cold cache (26.9s). Speed declining → timeout=10, conns mirrors active peers
+2026/03/10 15:25:40 [AI-Pilot] RAW: "{\"connections_limit\":24,\"peer_timeout_seconds\":10}" | Latency: 26.891475246s
+2026/03/10 15:25:40 [AI-Pilot] Optimizer applying change: Conns(25->24) Timeout(15s->10s) [Metrics: [CPU:62% (Peak:84%), Buf:99%, Peers:24, Speed:16.4MB/s (DOWN (-9.3MB/s))]]
+
+// Second cycle: cache warmer (18.1s). Speed stabilized → timeout flips to 60s to keep working peers
+2026/03/10 15:30:51 [AI-Pilot] RAW: "{\"connections_limit\":24,\"peer_timeout_seconds\":60}" | Latency: 18.126118678s
+2026/03/10 15:30:51 [AI-Pilot] Optimizer applying change: Conns(24->24) Timeout(10s->60s) [Metrics: [CPU:65% (Peak:83%), Buf:100%, Peers:24, Speed:11.7MB/s (STABLE)]]
+```
+
 ### 6. Auto-Disable (LLM not running)
 ```text
 2026/03/09 20:37:03 [AI-Pilot] LLM not reachable (http://127.0.0.1:8085) — auto-disabled. Restart gostream to re-enable.
