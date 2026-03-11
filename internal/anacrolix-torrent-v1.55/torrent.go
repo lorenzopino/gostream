@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/netip"
 	"net/url"
+	"runtime"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -2371,6 +2372,9 @@ func (t *Torrent) tryCreatePieceHasher() bool {
 	if t.storage == nil {
 		return false
 	}
+	if t.cl.activePieceHashers >= runtime.NumCPU() {
+		return false
+	}
 	pi, ok := t.getPieceToHash()
 	if !ok {
 		return false
@@ -2382,13 +2386,15 @@ func (t *Torrent) tryCreatePieceHasher() bool {
 	t.updatePiecePriority(pi, "Torrent.tryCreatePieceHasher")
 	t.storageLock.RLock()
 	t.activePieceHashes++
+	t.cl.activePieceHashers++
 	go t.pieceHasher(pi)
 	return true
 }
 
 func (t *Torrent) getPieceToHash() (ret pieceIndex, ok bool) {
 	t.piecesQueuedForHash.IterTyped(func(i pieceIndex) bool {
-		if t.piece(i).hashing {
+		p := t.piece(i)
+		if p.hashing || p.marking {
 			return true
 		}
 		ret = i
@@ -2447,6 +2453,7 @@ func (t *Torrent) pieceHasher(index pieceIndex) {
 	t.pieceHashed(index, correct, copyErr)
 	t.updatePiecePriority(index, "Torrent.pieceHasher")
 	t.activePieceHashes--
+	t.cl.activePieceHashers--
 	t.tryCreateMorePieceHashers()
 }
 
@@ -2780,7 +2787,11 @@ func (t *Torrent) cancelRequest(r RequestIndex) *Peer {
 }
 
 func (t *Torrent) requestingPeer(r RequestIndex) *Peer {
-	return t.requestState[r].peer
+	state, ok := t.requestState[r]
+	if !ok {
+		return nil
+	}
+	return state.peer
 }
 
 func (t *Torrent) addConnWithAllPieces(p *Peer) {

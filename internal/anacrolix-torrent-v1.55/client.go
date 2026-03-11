@@ -81,7 +81,8 @@ type Client struct {
 	pieceRequestOrder map[interface{}]*request_strategy.PieceRequestOrder
 
 	acceptLimiter map[ipStr]int
-	numHalfOpen   int
+	numHalfOpen        int
+	activePieceHashers int // client-level cap: max runtime.NumCPU() concurrent hashers
 
 	websocketTrackers websocketTrackers
 
