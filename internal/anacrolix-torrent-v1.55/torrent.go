@@ -2453,6 +2453,9 @@ func (t *Torrent) pieceHasher(index pieceIndex) {
 	t.pieceHashed(index, correct, copyErr)
 	t.updatePiecePriority(index, "Torrent.pieceHasher")
 	t.activePieceHashes--
+	if t.activePieceHashes == 0 {
+		t.updateComplete()
+	}
 	t.cl.activePieceHashers--
 	t.tryCreateMorePieceHashers()
 }
@@ -2770,7 +2773,17 @@ func (t *Torrent) pieceRequestIndexOffset(piece pieceIndex) RequestIndex {
 }
 
 func (t *Torrent) updateComplete() {
-	t.Complete.SetBool(t.haveAllPieces())
+	t.Complete.SetBool(t.isComplete())
+}
+
+func (t *Torrent) isComplete() bool {
+	if t.activePieceHashes != 0 {
+		return false
+	}
+	if !t.piecesQueuedForHash.IsEmpty() {
+		return false
+	}
+	return t.haveAllPieces()
 }
 
 func (t *Torrent) cancelRequest(r RequestIndex) *Peer {
