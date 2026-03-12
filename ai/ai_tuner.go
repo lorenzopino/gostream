@@ -135,7 +135,6 @@ func StartAITuner(ctx context.Context, aiURL string) {
 }
 
 var lastActiveHash string
-var lastAnnounceAt time.Time
 
 func runTuningCycle(aiURL string) {
 	if aiDisabled.Load() {
@@ -217,7 +216,6 @@ func runTuningCycle(aiURL string) {
 		lastTimeout = defaultTimeout
 		pulseCounter = 0
 		peakCPUCycle = 0
-		lastAnnounceAt = time.Time{}
 		go resetLlamaCache(aiURL)
 	}
 	lastActiveHash = currentHash
@@ -282,11 +280,12 @@ func runTuningCycle(aiURL string) {
 	currentSnap := sanitizeStr(fmt.Sprintf("[CPU:%d%% (Peak:%d%%), Buf:%d%%, Peers:%d, Speed:%.1fMB/s (%s)]",
 		int(avgCPU), int(peakCPUCycle), buffer, activeStats.ActivePeers, currSpeedMBs, speedTrendStr))
 
-	metricsHistory = append(metricsHistory, currentSnap)
+	// V1.4.9: Compact history for Qwen-0.6B
+	compactSnap := fmt.Sprintf("A:%d S:%.0f B:%d", activeStats.ActivePeers, currSpeedMBs, buffer)
+	metricsHistory = append(metricsHistory, compactSnap)
 	if len(metricsHistory) > 4 {
 		metricsHistory = metricsHistory[1:]
 	}
-	historyStr := strings.Join(metricsHistory, " -> ")
 
 	fSize := activeT.Size
 	if fSize == 0 {
@@ -308,12 +307,14 @@ func runTuningCycle(aiURL string) {
 	}
 
 	historyPrefix := ""
-	if len(metricsHistory) > 0 {
-		historyPrefix = "history=" + historyStr + " "
+	if len(metricsHistory) > 1 {
+		historyPrefix = "h:" + strings.Join(metricsHistory[:len(metricsHistory)-1], "->") + " "
 	}
+
 	prompt := fmt.Sprintf(
-		"<|im_start|>system\nTune BitTorrent parms for performance 4K Movie streaming. connections_limit MUST be between 10-60. peer_timeout_seconds MUST be between 10-60. discovery_boost: true (if you think we need more peers from trackers), false (otherwise). Output JSON: {\"connections_limit\":N,\"peer_timeout_seconds\":M,\"discovery_boost\":B}<|im_end|>\n<|im_start|>user\nActive peers in swarm:%d Total peers:%d Swarm efficiency:%.0f%% Connected seeds:%d File size:%.1fGB - %sspeed=%.0fMB/s cpu=%d%% buf=%d%% peers=%d trend=%s<|im_end|>\n<|im_start|>assistant\n",
-		activeStats.ActivePeers, activeStats.TotalPeers, swarmEfficiency*100, activeStats.ConnectedSeeders, fileSizeGB, historyPrefix, currSpeedMBs, int(currentCPU), buffer, activeStats.ActivePeers, speedTrendStr,
+		"<|im_start|>system\nTune BitTorrent for smooth streaming. JSON only. Conns:10-60 Timeout:10-60.\nPattern: A:25 T:30 S:15MB Seeds:8 cpu:50%% buf:90%% => {\"connections_limit\":18,\"peer_timeout_seconds\":45,\"discovery_boost\":false}\nPattern: A:2 T:500 S:1MB Seeds:1 cpu:30%% buf:20%% => {\"connections_limit\":60,\"peer_timeout_seconds\":15,\"discovery_boost\":true}\nPattern: A:5 T:200 S:0MB Seeds:2 cpu:80%% buf:40%% => {\"connections_limit\":10,\"peer_timeout_seconds\":60,\"discovery_boost\":true}<|im_end|>\n<|im_start|>user\n%sA:%d T:%d S:%.0fMB Seeds:%d cpu:%d%% buf:%d%% trend:%s<|im_end|>\n<|im_start|>assistant\n",
+		historyPrefix, activeStats.ActivePeers, activeStats.TotalPeers, currSpeedMBs,
+		activeStats.ConnectedSeeders, int(currentCPU), buffer, speedTrendStr,
 	)
 	tweak, err := fetchAIJSON[AITweak](aiURL, prompt)
 	if err != nil {
@@ -352,17 +353,16 @@ func runTuningCycle(aiURL string) {
 			lastConns = newConns
 			lastTimeout = newTimeout
 
-			log.Printf("[AI-Pilot] Optimizer applying change: Conns(%d->%d) Timeout(%ds->%ds) [Metrics: %s] [Ctx: %s] [File: %.1fGB]",
-				oldConns, lastConns, oldTimeout, lastTimeout, currentSnap, contextStr, fileSizeGB)
+			log.Printf("[AI-Pilot] Optimizer applying change: Conns(%d->%d) Timeout(%ds->%ds) Boost:%v [Metrics: %s] [Ctx: %s] [File: %.1fGB]",
+				oldConns, lastConns, oldTimeout, lastTimeout, tweak.DiscoveryBoost, currentSnap, contextStr, fileSizeGB)
 		}
 
-		if tweak.DiscoveryBoost && time.Since(lastAnnounceAt) > 120*time.Second {
+		if tweak.DiscoveryBoost {
 			healthyThresholdMBs := fileSizeGB * 0.15
 			if currSpeedMBs > healthyThresholdMBs || buffer > 80 {
 				log.Printf("[AI-Pilot] DiscoveryBoost: skipped (streaming healthy: speed=%.1fMB/s threshold=%.1fMB/s buf=%d%%)",
 					currSpeedMBs, healthyThresholdMBs, buffer)
 			} else {
-				lastAnnounceAt = time.Now()
 				activeT.Torrent.Announce()
 				log.Printf("[AI-Pilot] DiscoveryBoost: swarm efficiency %.0f%% (active:%d/total:%d/seed:%d) → tracker re-announce triggered",
 					swarmEfficiency*100, activeStats.ActivePeers, activeStats.TotalPeers, activeStats.ConnectedSeeders)
