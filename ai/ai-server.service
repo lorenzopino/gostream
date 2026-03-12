@@ -6,13 +6,10 @@ After=network.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/GoStream/ai
-# Fixed ExecStart on a single line to ensure correct parameter passing
-ExecStart=/home/pi/GoStream/ai/llama.cpp/build/bin/llama-server -m /home/pi/GoStream/ai/models/Qwen_Qwen3-0.6B-Q4_K_M.gguf --port 8085 -t 2 -c 512 --host 0.0.0.0
-    
+ExecStart=/home/pi/GoStream/ai/llama.cpp/build/bin/llama-server -m /home/pi/GoStream/ai/models/Qwen_Qwen3-0.6B-Q4_K_M.gguf --port 8085 -t 4 -c 512 --host 0.0.0.0 -np 1 --mlock --slot-save-path /tmp/llama-slots
+LimitMEMLOCK=infinity
 Restart=always
 RestartSec=10
-Nice=15
-MemoryMax=900M
 
 [Install]
 WantedBy=multi-user.target

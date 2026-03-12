@@ -54,6 +54,22 @@ type AITweak struct {
 	PeerTimeout      float64 `json:"peer_timeout_seconds"`
 }
 
+func resetLlamaCache(aiURL string) {
+	base := strings.TrimSuffix(aiURL, "/completion")
+	url := base + "/slots/0?action=erase"
+	resp, err := http.Post(url, "application/json", nil)
+	if err != nil {
+		log.Printf("[AI-Pilot] KV cache reset skipped: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[AI-Pilot] KV cache reset skipped: HTTP %d", resp.StatusCode)
+		return
+	}
+	log.Printf("[AI-Pilot] KV cache reset OK (slot 0 erased)")
+}
+
 func (t *AITweak) Sanitize() {
 	if t.ConnectionsLimit < 10 {
 		t.ConnectionsLimit = 10
@@ -134,6 +150,7 @@ func runTuningCycle(aiURL string) {
 		cycleCounter = 0
 		peakCPUCycle = 0
 		lastActiveHash = ""
+		go resetLlamaCache(aiURL)
 		return
 	}
 
@@ -166,6 +183,7 @@ func runTuningCycle(aiURL string) {
 				cpuUsageAvg = nil
 				cycleCounter = 0
 				peakCPUCycle = 0
+				go resetLlamaCache(aiURL)
 			}
 			return
 		}
@@ -200,6 +218,7 @@ func runTuningCycle(aiURL string) {
 		lastTimeout = defaultTimeout
 		pulseCounter = 0
 		peakCPUCycle = 0
+		go resetLlamaCache(aiURL)
 	}
 	lastActiveHash = currentHash
 
