@@ -29,6 +29,8 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 - The **Health Monitor Dashboard** shows a real-time speed graph, an active stream panel with movie poster and quality badges, sync controls, and system stats.
 - Everything ships as a **single binary**: GoStorm engine, GoStream, metrics, control panel, and webhook receiver in one `gostream` executable.
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/MrRobotoGit/gostream)
+
 ---
 ## Control Panel
 
