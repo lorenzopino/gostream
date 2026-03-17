@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">🎬 GoStream</h1>
   <p align="center">
-    <strong>The most advanced BitTorrent engine and FUSE virtual filesystem for live streaming to your private Plex library. Forget Real-Debrid.</strong>
+    <strong>The most advanced BitTorrent engine and FUSE virtual filesystem for live streaming to your private Plex/Jellyfin library. Forget Real-Debrid.</strong>
   </p>
 </p>
 
@@ -9,15 +9,15 @@
 
 GoStream exposes a **custom FUSE virtual filesystem** where every `.mkv` file is a perfect illusion: it looks like a real file on disk, but every byte is served live from a BitTorrent swarm on demand. No downloading. No temp files. No storage quota.
 
-The BitTorrent engine runs **inside the same OS process** as the FUSE layer, connected by an in-memory `io.Pipe()`. When Plex reads a byte range, there is no HTTP round-trip, no serialization, no proxy overhead — just bytes, flowing directly from peers through RAM to Plex at full speed.
+The BitTorrent engine runs **inside the same OS process** as the FUSE layer, connected by an in-memory `io.Pipe()`. When Plex/Jellyfin reads a byte range, there is no HTTP round-trip, no serialization, no proxy overhead — just bytes, flowing directly from peers through RAM to the media server at full speed.
 
 The result: **4K HDR Dolby Vision**, fully seekable, on a **Raspberry Pi 4**, starting in 0.1 seconds.
 
-This is not a torrent client with a media server bolted on. The FUSE filesystem *is* the product — custom-built from scratch around the constraints of torrent streaming: non-sequential byte-range requests, multi-gigabyte files that must be seekable at any position, and a Plex scanner that probes every file in a library of hundreds of titles on startup.
+This is not a torrent client with a media server bolted on. The FUSE filesystem *is* the product — custom-built from scratch around the constraints of torrent streaming: non-sequential byte-range requests, multi-gigabyte files that must be seekable at any position, and a Plex/Jellyfin scanner that probes every file in a library of hundreds of titles on startup.
 
 ### What's included
 
-- **Custom FUSE virtual filesystem**: every `.mkv` is a live torrent presented to Plex as a real file. No temp files, no persistent downloads — torrent data never touches the disk.
+- **Custom FUSE virtual filesystem**: every `.mkv` is a live torrent presented to the media server as a real file. No temp files, no persistent downloads — torrent data never touches the disk.
 - The embedded torrent engine is **GoStorm**, a fork of [TorrServer Matrix 1.37](https://github.com/YouROK/TorrServer) and [anacrolix/torrent v1.55](https://github.com/anacrolix/torrent), running in-process with the FUSE layer (no separate HTTP proxy). Both upstreams carry targeted streaming patches not present in the originals.
 - **Movie auto-discovery** pulls trending and popular titles from TMDB daily, finds the best torrent via Torrentio (4K DV preferred), and registers them automatically. Existing entries are **upgraded** when a better version becomes available (e.g. 1080p → 4K HDR).
 - **TV Series sync** runs weekly with a fullpack-first season pack strategy and a Plex-compatible directory structure.
@@ -40,7 +40,7 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 
 ## Table of Contents
 
-- [The Setup: GoStream + Plex/Infuse on Apple TV](#the-setup-gostream--plex--infuse-on-apple-tv)
+- [The Setup: GoStream + Plex/Jellyfin/Infuse on Apple TV](#the-setup-gostream--plex--infuse-on-apple-tv)
 - [How the Magic Works](#how-the-magic-works)
 - [AI GoStream Pilot - Experimental](https://github.com/MrRobotoGit/gostream/blob/main/ai/docs/ai-pilot.md)
 - [Architecture](#architecture)
@@ -54,7 +54,7 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 - [Configuration Reference](#configuration-reference)
 - [Sync Scripts](#sync-scripts)
 - [Prowlarr Integration](#prowlarr-integration-resilience)
-- [Plex & Samba Setup](#plex-and-samba-setup)
+- [Plex/Jellyfin & Samba Setup](#plex-and-samba-setup)
 - [Build from Source](#build-from-source)
 - [Docker](#docker)
 - [API Reference](#api-quick-reference)
@@ -64,7 +64,7 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 
 ---
 
-## The Setup: GoStream + Plex/Infuse on Apple TV
+## The Setup: GoStream + Plex/Jellyfin/Infuse on Apple TV
 
 > Not a developer? This section explains what you actually get and why it works so well.
 
@@ -79,7 +79,7 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 
 **Plex** (or **Jellyfin**, or any media server) sees this virtual hard drive as a normal media library. It scans the files, downloads posters and descriptions from the internet, tracks what you've watched, and makes everything available on your home network, just like it would with a real NAS.
 
-**Infuse** on Apple TV connects to your Plex library and plays the files using Direct Play: it reads the video stream directly from the file, with no conversion or re-encoding. This is why it handles 4K HDR Dolby Vision effortlessly, even though it is coming from a torrent in real time.
+**Infuse** on Apple TV connects to your Plex/Jellyfin library and plays the files using Direct Play: it reads the video stream directly from the file, with no conversion or re-encoding. This is why it handles 4K HDR Dolby Vision effortlessly, even though it is coming from a torrent in real time.
 
 Because GoStream exposes standard `.mkv` files on a standard filesystem, any player or media server that can read a network share works: Plex, Jellyfin, Emby, Kodi, VLC, mpv, or anything else. No plugins, no special configuration.
 
@@ -89,11 +89,11 @@ GoStream includes sync scripts that run on a schedule and keep your library up t
 
 Every day, a script queries **TMDB** (The Movie Database) for the latest releases, trending titles, and popular movies. For each title it finds, it searches **Torrentio** for the best available torrent (preferring 4K Dolby Vision, falling back to 1080p). If a good torrent is found, it registers it in GoStream and creates the corresponding virtual `.mkv` file in the library.
 
-The next time Plex scans, it finds a new file, downloads the poster and description, and the film appears in your library ready to play.
+The next time the media server scans, it finds a new file, downloads the poster and description, and the film appears in your library ready to play.
 
 If a better version of a film becomes available later (for example a 4K HDR release of a title you already have in 1080p), the script replaces it automatically.
 
-TV series work the same way: a weekly script finds new seasons and episodes, organises them in the Plex-compatible folder structure (`Show Name/Season 01/`), and they appear in your library within the week.
+TV series work the same way: a weekly script finds new seasons and episodes, organises them in the Plex/Jellyfin-compatible folder structure (`Show Name/Season 01/`), and they appear in your library within the week.
 
 You can also add a title to your **Plex Watchlist** from any device and it will appear in your library within the hour.
 ### Prowlarr Integration (Resilience)
@@ -121,37 +121,37 @@ GoStream has no external dependency at playback time. No third-party service, no
 
 ### Why Infuse starts in under a second
 
-When you press Play, Infuse immediately reads the beginning and end of the file to load the video index and seek tables. On a real hard drive this is instant. GoStream replicates this with an **SSD warmup cache**: the first 64 MB and last few MB of every file are pre-cached on the Pi's SSD during the initial Plex library scan. By the time you press Play, those bytes are already on disk and Infuse gets them in milliseconds.
+When you press Play, Infuse immediately reads the beginning and end of the file to load the video index and seek tables. On a real hard drive this is instant. GoStream replicates this with an **SSD warmup cache**: the first 64 MB and last few MB of every file are pre-cached on the Pi's SSD during the initial Plex/Jellyfin library scan. By the time you press Play, those bytes are already on disk and Infuse gets them in milliseconds.
 
 
 ### Why your library survives a reboot
 
-Every file on a real filesystem has a permanent ID called an **inode**. Plex and Infuse use these IDs to recognize files across restarts, so they know "this is the same film I scanned last week" and do not re-download metadata or reset your watch history.
+Every file on a real filesystem has a permanent ID called an **inode**. Plex/Jellyfin and Infuse use these IDs to recognize files across restarts, so they know "this is the same film I scanned last week" and do not re-download metadata or reset your watch history.
 
-On a standard virtual filesystem, these IDs are random and change every time the system restarts. GoStream solves this by saving a persistent inode map (`inode_map.json`) to disk. After a reboot, every virtual `.mkv` gets back the exact same ID it had before. To Plex and Infuse, it is indistinguishable from a file that never moved.
+On a standard virtual filesystem, these IDs are random and change every time the system restarts. GoStream solves this by saving a persistent inode map (`inode_map.json`) to disk. After a reboot, every virtual `.mkv` gets back the exact same ID it had before. To Plex/Jellyfin and Infuse, it is indistinguishable from a file that never moved.
 
 ### When you press Play: the full chain
 
-1. You press Play on Infuse (Apple TV) -> Infuse requests the file from Plex
-2. Plex reads the file from GoStream's virtual filesystem
-3. Plex sends a webhook to GoStream: "user started playing *this* film"
+1. You press Play on Infuse (Apple TV) -> Infuse requests the file from Plex/Jellyfin
+2. Plex/Jellyfin reads the file from GoStream's virtual filesystem
+3. Plex/Jellyfin sends a webhook to GoStream: "user started playing *this* film"
 4. GoStream identifies the torrent from the IMDB ID and switches to **Priority Mode**: all bandwidth focuses on the film you are watching, background activity is paused
-5. Bytes flow: BitTorrent peers -> GoStream RAM -> Plex -> Infuse -> your TV
+5. Bytes flow: BitTorrent peers -> GoStream RAM -> Plex/Jellyfin -> Infuse -> your TV
 6. If you seek, GoStream jumps directly to that position in the torrent with no re-buffering from the start
 
 ---
 
 ## How the Magic Works
 
-Plex reads `/mnt/gostream-mkv-virtual/movies/Interstellar.mkv`. From Plex's perspective, it's a normal 55 GB file on a local disk. In reality, the file does not exist. The FUSE kernel module intercepts the read, calls into GoStream, and GoStream serves the exact bytes from a three-layer cache — backed by a live BitTorrent swarm.
+Plex/Jellyfin reads `/mnt/gostream-mkv-virtual/movies/Interstellar.mkv`. From Plex/Jellyfin's perspective, it's a normal 55 GB file on a local disk. In reality, the file does not exist. The FUSE kernel module intercepts the read, calls into GoStream, and GoStream serves the exact bytes from a three-layer cache — backed by a live BitTorrent swarm.
 
 | Layer | What | Size | Purpose |
 |-------|------|------|---------|
 | **L1** | In-memory Read-Ahead | 256 MB | 32-shard concurrent buffer with per-shard LRU |
 | **L2** *(optional)* | SSD Warmup Head | 64 MB/file | Instant TTFF on repeat playback — served at 150–200 MB/s from SSD |
-| **L3** *(optional)* | SSD Warmup Tail | 16 MB/file | MKV Cues (seek index) — Plex probes the end of every file before confirming playback |
+| **L3** *(optional)* | SSD Warmup Tail | 16 MB/file | MKV Cues (seek index) — Plex/Jellyfin probes the end of every file before confirming playback |
 
-What makes this non-trivial: a FUSE filesystem that backs a real directory of static files is straightforward. A FUSE filesystem that must handle non-sequential byte-range requests across hundreds of files, each backed by an independent torrent with variable peer availability, while a Plex scanner hammers every inode in parallel — that required building every subsystem from scratch.
+What makes this non-trivial: a FUSE filesystem that backs a real directory of static files is straightforward. A FUSE filesystem that must handle non-sequential byte-range requests across hundreds of files, each backed by an independent torrent with variable peer availability, while a Plex/Jellyfin scanner hammers every inode in parallel — that required building every subsystem from scratch.
 
 ---
 
@@ -176,7 +176,7 @@ BitTorrent Peers ←→ GoStorm Engine (:8090)
                          │
          Synology CIFS mount (serverino, vers=3.0)
                          │
-         Plex Media Server libraries
+         Plex/Jellyfin Media Server libraries
 ```
 
 ### Port Map
@@ -196,7 +196,7 @@ BitTorrent Peers ←→ GoStorm Engine (:8090)
 
 ### 1. Zero-Network Native Bridge
 
-GoStream runs as a **single process** — GoStorm engine and GoStream FUSE compiled into one binary. When Plex reads a `.mkv` byte range, the FUSE layer calls directly into GoStorm via an in-memory `io.Pipe()`: no TCP round-trip, no HTTP header parsing, no serialization, no proxy overhead. Metadata operations are direct Go function calls. This eliminates the network RTT that causes stuttering in every HTTP-based torrent streaming proxy on constrained hardware.
+GoStream runs as a **single process** — GoStorm engine and GoStream FUSE compiled into one binary. When Plex/Jellyfin reads a `.mkv` byte range, the FUSE layer calls directly into GoStorm via an in-memory `io.Pipe()`: no TCP round-trip, no HTTP header parsing, no serialization, no proxy overhead. Metadata operations are direct Go function calls. This eliminates the network RTT that causes stuttering in every HTTP-based torrent streaming proxy on constrained hardware.
 
 ### 2. Two-Layer SSD Warmup Cache *(optional)*
 
@@ -204,9 +204,9 @@ An optional SSD cache that improves performance for repeat playback. It can be e
 
 When enabled, the **head cache** stores the first 64 MB of each file on SSD on first play. On repeat playback, TTFF drops to **< 0.01 s** (SSD reads at 150–200 MB/s, compared to 2–4 s for cold torrent activation).
 
-The **tail cache** stores the last 16 MB separately. MKV files keep their Cues (seek index) near the end, and Plex probes that region before confirming playback. Without tail cache, the seek bar may render as unavailable on first open.
+The **tail cache** stores the last 16 MB separately. MKV files keep their Cues (seek index) near the end, and Plex/Jellyfin probes that region before confirming playback. Without tail cache, the seek bar may render as unavailable on first open.
 
-The default quota is 32 GB with LRU eviction by write time, enough for around 150 films. Plex library scans read the first 1 MB of every file, which is enough to populate the head cache automatically — no manual warming needed.
+The default quota is 32 GB with LRU eviction by write time, enough for around 150 films. Media server library scans read the first 1 MB of every file, which is enough to populate the head cache automatically — no manual warming needed.
 
 ### 3. Plex Webhook Integration & Smart Streaming
 
@@ -245,11 +245,11 @@ Accurate, low-latency seeking in large 4K files required five coordinated fixes:
 | **Atomic pipe interrupt** | `Interrupt()` closes the pipe reader atomically when the player jumps > 256 MB — instant unblock from `io.ReadFull` |
 | **Reactive jump** | If player is > 256 MB ahead of pump, snap to `(playerOff / chunkSize) * chunkSize` |
 | **Pump survival** | Pump survives `ErrInterrupted` via 200 ms sleep-and-continue — no goroutine restart overhead |
-| **Tail probe detection** | Plex's end-of-file MKV Cues probes served from SSD tail cache without steering the pump |
+| **Tail probe detection** | Plex/Jellyfin's end-of-file MKV Cues probes served from SSD tail cache without steering the pump |
 
 ### 6. 32-Shard Read-Ahead Cache
 
-The 256 MB read-ahead budget is split across **32 independent shards**, each keyed by hash of file path and offset, each with its own LRU and mutex. Multiple Plex sessions and scanner threads read concurrently without contending on a single lock. Both `Put()` and `Get()` use **defensive copies** to prevent use-after-free races from channel-pool reuse.
+The 256 MB read-ahead budget is split across **32 independent shards**, each keyed by hash of file path and offset, each with its own LRU and mutex. Multiple Plex/Jellyfin sessions and scanner threads read concurrently without contending on a single lock. Both `Put()` and `Get()` use **defensive copies** to prevent use-after-free races from channel-pool reuse.
 
 ### 7. Optional Automation Layer
 
@@ -292,7 +292,7 @@ GoStorm is a fork of **[TorrServer Matrix 1.37](https://github.com/YouROK/TorrSe
 | **Request rebuild debounce** | 300 rebuilds/s reduced to 60 → **5x CPU reduction**. |
 | **O(1) `clearPriority`** | Original iterated all ~512 cached pieces with global lock. Replaced with `localPriority` map tracking ~25 active pieces. |
 | **4 MB MemPiece buffer zeroing** | Channel pools reused buffers without zeroing → stale data from different files caused forward-jump corruption. Fixed with `clear(p.buffer)`. |
-| **raCache defensive copies** | `Get()` returned sub-slices of pooled buffers. On eviction, Plex received overwritten data. Fixed with copies on `Put()` and `Get()`. |
+| **raCache defensive copies** | `Get()` returned sub-slices of pooled buffers. On eviction, Plex/Jellyfin received overwritten data. Fixed with copies on `Put()` and `Get()`. |
 | **`cleanTrigger` panic fix** | `Cache.Close()` closed the channel while goroutines could still send → panics during peer upload. Fixed with separate `cleanStop` channel. |
 | **`PeekTorrent` discipline** | Monitoring endpoints using `GetTorrent()` caused silent torrent activation loops. All monitoring paths now use `PeekTorrent()`. |
 | **InodeMap GC fix** | Inode cleanup pruned virtual MKV stubs every 5 min (529 files). Fixed to use `WalkDir(physicalSourcePath)`. |
@@ -317,7 +317,7 @@ GoStorm is a fork of **[TorrServer Matrix 1.37](https://github.com/YouROK/TorrSe
 | Memory footprint (read-ahead) | Deterministic 256 MB |
 | GOMEMLIMIT | 2200 MiB |
 | Peak throughput (fast seeder) | **400+ Mbps** |
-| Plex scan peer count | ~6 total (was ~15,000 before fix) |
+| Plex/Jellyfin scan peer count | ~6 total (was ~15,000 before fix) |
 | Inode shard count | 32 (collision-protected) |
 | Warmup cache capacity | ~150 films at 64 MB each (32 GB) |
 
@@ -333,7 +333,7 @@ GoStorm is a fork of **[TorrServer Matrix 1.37](https://github.com/YouROK/TorrSe
 | **FUSE 3** | `sudo apt install fuse3 libfuse3-dev` |
 | **systemd** | For service management |
 | **Samba** | `sudo apt install samba` |
-| **Plex** | Media Server (on Synology or any network host) |
+| **Plex/Jellyfin** | Media Server (on Synology or any network host) |
 | **TMDB API key** | Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
 | **Plex token** | Settings → Account → XML API |
 
@@ -371,7 +371,7 @@ sudo systemctl start gostream health-monitor
 ## How-To Guide
 
 > [!CAUTION]
-> **Attention:** After the first run of the Movie and TV library population scripts, hundreds of `.mkv` files will be created. Plex will then begin scanning these files to populate its UI. During this initial scan, playback will be extremely slow or may time out. This is because Plex opens and closes files hundreds of times during analysis, which congests the BitTorrent engine. Please wait for Plex to complete its scan before starting any streams. Enjoy!
+> **Attention:** After the first run of the Movie and TV library population scripts, hundreds of `.mkv` files will be created. Plex/Jellyfin will then begin scanning these files to populate its UI. During this initial scan, playback will be extremely slow or may time out. This is because the media server opens and closes files hundreds of times during analysis, which congests the BitTorrent engine. Please wait for Plex/Jellyfin to complete its scan before starting any streams. Enjoy!
 
 
 <details>
@@ -395,15 +395,15 @@ curl -X POST http://192.168.1.2:8096/plex-webhook \
 </details>
 
 <details>
-<summary><b>Step 2 — Configure the Plex Library</b></summary>
+<summary><b>Step 2 — Configure the Plex/Jellyfin Library</b></summary>
 
-Add a Movies library in Plex pointing to the Samba share:
+Add a Movies library in Plex/Jellyfin pointing to the Samba share:
 ```
 smb://192.168.1.2/gostream-mkv-virtual/movies
 ```
-Or, if using Synology, point Plex to the CIFS mount: `/volume1/GoStream/movies`.
+Or, if using Synology, point Plex/Jellyfin to the CIFS mount: `/volume1/GoStream/movies`.
 
-Run a library scan after adding the library. Plex reads the first megabyte of every `.mkv` file during the scan — this automatically populates the SSD warmup head cache for every title. Subsequent plays will start in under 0.5 seconds.
+Run a library scan after adding the library. Plex/Jellyfin reads the first megabyte of every `.mkv` file during the scan — this automatically populates the SSD warmup head cache for every title. Subsequent plays will start in under 0.5 seconds.
 
 </details>
 
@@ -429,10 +429,10 @@ The script fetches popular films from TMDB, finds the best available torrent for
 <summary><b>Step 4 — Watch a Film (What Happens Internally)</b></summary>
 
 ```
-1. Plex requests /mnt/gostream-mkv-virtual/movies/Interstellar.mkv
+1. Plex/Jellyfin requests /mnt/gostream-mkv-virtual/movies/Interstellar.mkv
 2. FUSE Open() triggers Wake() — GoStorm activates the torrent
-3. Plex metadata probes → served from SSD warmup cache if enabled, otherwise from the torrent pump
-4. Plex probes MKV Cues at end → served from SSD tail cache if enabled
+3. Plex/Jellyfin metadata probes → served from SSD warmup cache if enabled, otherwise from the torrent pump
+4. Plex/Jellyfin probes MKV Cues at end → served from SSD tail cache if enabled
 5. Plex sends media.play webhook → GoStream activates Priority Mode
 6. Streaming reads → served from Read-Ahead Cache or Native Bridge pump
 7. Playback begins (0.1–0.5 s with warmup, 2–4 s cold) ✨
@@ -443,7 +443,7 @@ The script fetches popular films from TMDB, finds the best available torrent for
 <details>
 <summary><b>Step 5 — Seek in 4K</b></summary>
 
-When Plex seeks to a new timestamp:
+When Plex/Jellyfin seeks to a new timestamp:
 
 1. `Read()` is called at the new offset — `lastOff` is updated immediately
 2. If the jump exceeds 256 MB: `Interrupt()` closes the pipe — pump goroutine unblocks atomically
@@ -740,7 +740,7 @@ python3 scripts/gostorm-sync-complete.py
 python3 scripts/gostorm-tv-sync.py
 ```
 
-Fullpack-first approach — prefers complete season packs. Plex-compatible directory structure:
+Fullpack-first approach — prefers complete season packs. Plex/Jellyfin-compatible directory structure:
 ```
 Show Name/
   Season.01/
@@ -767,11 +767,11 @@ Real-time dashboard at `:8095`. See [Health Monitor Dashboard](#-health-monitor-
 
 ---
 
-## Plex and Samba Setup
+## Plex/Jellyfin and Samba Setup
 
 ### Samba Configuration
 
-Critical parameters in `/etc/samba/smb.conf` to prevent FUSE deadlocks during Plex library scans:
+Critical parameters in `/etc/samba/smb.conf` to prevent FUSE deadlocks during Plex/Jellyfin library scans:
 
 ```ini
 [gostream-mkv-virtual]
@@ -781,11 +781,11 @@ Critical parameters in `/etc/samba/smb.conf` to prevent FUSE deadlocks during Pl
    oplocks = no           # CRITICAL: prevents kernel exclusive locks on FUSE files
    aio read size = 1      # CRITICAL: forces async I/O, prevents smbd D-state
    deadtime = 15          # cleans inactive SMB connections every 15 minutes
-   vfs objects = fileid   # CRITICAL: transmits 64-bit inodes to Synology/Plex
+   vfs objects = fileid   # CRITICAL: transmits 64-bit inodes to Synology/Plex/Jellyfin
 ```
 
 > [!WARNING]
-> **`oplocks = no` is non-negotiable.** With oplocks enabled, the kernel requests exclusive locks on FUSE-backed files, causing `smbd` threads to enter D-state indefinitely during concurrent Plex scans.
+> **`oplocks = no` is non-negotiable.** With oplocks enabled, the kernel requests exclusive locks on FUSE-backed files, causing `smbd` threads to enter D-state indefinitely during concurrent Plex/Jellyfin scans.
 
 > [!IMPORTANT]
 > **`vfs objects = fileid`** ensures 64-bit inode transmission. Without it, Synology receives truncated 32-bit inodes, causing Plex to misidentify files.
@@ -920,7 +920,7 @@ Check warmup cache:
 curl -s http://127.0.0.1:8096/metrics | jq '.read_ahead_active_bytes'
 ```
 
-If empty, force a Plex library scan. The scan reads the first MB of each file and populates the SSD head warmup.
+If empty, force a Plex/Jellyfin library scan. The scan reads the first MB of each file and populates the SSD head warmup.
 
 Check active torrent status:
 ```bash
@@ -934,7 +934,7 @@ If peer count < 3 and you are routing through WireGuard, check NAT-PMP configura
 </details>
 
 <details>
-<summary><b>smbd D-state or Samba hangs during Plex scan</b></summary>
+<summary><b>smbd D-state or Samba hangs during Plex/Jellyfin scan</b></summary>
 
 Almost always one of three causes:
 
@@ -1033,7 +1033,7 @@ Paths below use the defaults set by `install.sh`. All are configurable during in
 | `~/GoStream/scripts/` | Python sync & monitor scripts |
 | `~/GoStream/STATE/` | Inode map, sync caches (co-located with install dir) |
 | `~/logs/gostream.log` | Main service log |
-| `/mnt/gostream-mkv-virtual/` | FUSE mount point (served to Plex / Samba) |
+| `/mnt/gostream-mkv-virtual/` | FUSE mount point (served to Plex/Jellyfin -> Samba) |
 | `/etc/systemd/system/gostream.service` | systemd service definition |
 
 **Build (cloned repository — default `~/gostream/`)**
