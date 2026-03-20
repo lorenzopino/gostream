@@ -88,10 +88,6 @@ func InitDiskWarmup() {
 		return
 	}
 
-	if globalConfig.WarmupHeadSizeMB > 0 {
-		warmupFileSize = globalConfig.WarmupHeadSizeMB * 1024 * 1024
-	}
-
 	dir := settings.BTsets.TorrentsSavePath
 	if dir == "" || dir == "/" {
 		return

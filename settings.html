@@ -818,17 +818,10 @@
                                         <input type="text" name="torrentsSavePath">
                                         <div class="hint">Warmup files path</div>
                                     </div>
-                                    <div class="form-grid">
-                                        <div class="form-group">
-                                            <label>SSD Quota (GB)</label>
-                                            <input type="number" name="disk_warmup_quota_gb">
-                                            <div class="hint">SSD space for warmup cache</div>
-                                        </div>
-                                        <div class="form-group">
-                                            <label>Head Warmup (MB)</label>
-                                            <input type="number" name="warmup_head_size_mb">
-                                            <div class="hint">Per-file head cache on SSD</div>
-                                        </div>
+                                    <div class="form-group">
+                                        <label>SSD Quota (GB)</label>
+                                        <input type="number" name="disk_warmup_quota_gb">
+                                        <div class="hint">SSD space for warmup cache</div>
                                     </div>
                                 </div>
 
@@ -1224,7 +1217,7 @@
             'cache_cleanup_interval_min', 'http_client_timeout_seconds', 'max_retry_attempts',
             'retry_delay_ms', 'gostorm_url', 'rescue_grace_period_seconds',
             'rescue_cooldown_hours', 'metrics_port', 'disk_warmup_quota_gb',
-            'warmup_head_size_mb', 'log_level', 'proxy_listen_port', 'blocklist_url',
+            'log_level', 'proxy_listen_port', 'blocklist_url',
             'tmdb_api_key', 'torrentio_url'
         ];
 

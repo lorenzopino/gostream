@@ -109,7 +109,9 @@ type Config struct {
 
 	// --- Disk Warmup ---
 	DiskWarmupQuotaGB int64 `json:"disk_warmup_quota_gb"` // Total SSD quota for warmup cache (default: 32)
-	WarmupHeadSizeMB  int64 `json:"warmup_head_size_mb"`  // Per-file head warmup cap in MB (default: 64)
+	// Deprecated: warmupFileSize is now hardcoded at 64MB. Field kept for
+	// backward-compatible JSON unmarshal of existing config.json files.
+	WarmupHeadSizeMB int64 `json:"warmup_head_size_mb"`
 
 	// --- NAT-PMP (V228) ---
 	NatPMP NatPMPConfig `json:"natpmp"`
