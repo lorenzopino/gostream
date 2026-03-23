@@ -114,7 +114,7 @@ class GoStormTV:
         self.FULLPACK_PRIORITY_BONUS = 500  # Bonus per fullpack nel sorting (High Priority)
         self.UPGRADE_THRESHOLD = 1.2  # 20% improvement required for upgrade
         self.MIN_SEEDERS = 5  # Minimum seeders
-        self.MIN_EPISODE_SIZE = 200 * 1024 * 1024  # 200MB
+        self.MIN_EPISODE_SIZE = 1 * 1024 * 1024 * 1024  # 1GB
         self.MAX_EPISODE_SIZE = 30 * 1024 * 1024 * 1024  # 30GB
 
         # Quality thresholds for skipping already-complete seasons
