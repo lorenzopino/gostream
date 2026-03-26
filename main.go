@@ -957,7 +957,8 @@ type MkvHandle struct {
 	hasSlot      bool
 	isWatching   bool      // V258: Handle is attached to a shared pump
 	hasWarmup    bool      // V272: True if both head+tail warmup available at Open time
-	pumpOnce     sync.Once // V310: lazy pump start on first real Read()
+	pumpOnce        sync.Once // V310: lazy pump start on first real Read()
+	isPrimaryHandle bool      // V703b: true for pump creator and primary reconnects (newRefs==1)
 }
 
 // V264: startNativePump centralizes the logic for acquiring a slot and starting the background pump.
@@ -994,20 +995,24 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 	// V260: Check activePumps first (Singleton pattern)
 	if val, ok := activePumps.Load(h.path); ok {
 		ps := val.(*NativePumpState)
-		atomic.AddInt32(&ps.refCount, 1)
+		newRefs := atomic.AddInt32(&ps.refCount, 1)
 		h.mu.Lock()
 		h.hasSlot = true
 		h.isWatching = true
 		h.nativeReader = ps.reader
 		h.pumpCancel = ps.cancel
 		h.mu.Unlock()
-		// V701/V702: Inherit the player's last known position from the shared pump state.
-		// Saved by the previous handle on Release(). Prevents false V286 backward-seek
-		// interrupts caused by Plex/Samba handle cycling during normal playback.
-		if curPos := atomic.LoadInt64(&ps.playerOff); curPos > 0 {
-			atomic.StoreInt64(&h.lastOff, curPos)
+		// V703b: Primary reconnect (refCount 0→1): inherit player position for V310 anchor
+		// and mark as primary so V284 and V702 can trust its lastOff.
+		// Secondary handles (refCount 1→2+, Plex CIFS metadata probes): no inheritance —
+		// their first Read() at an arbitrary offset must not steer the pump via V284/V286.
+		if newRefs == 1 {
+			h.isPrimaryHandle = true
+			if curPos := atomic.LoadInt64(&ps.playerOff); curPos > 0 {
+				atomic.StoreInt64(&h.lastOff, curPos)
+			}
 		}
-		logger.Printf("[V264] Attached to existing pump (Refs: %d): %s", atomic.LoadInt32(&ps.refCount), filepath.Base(h.path))
+		logger.Printf("[V264] Attached to existing pump (Refs: %d, primary=%v): %s", newRefs, h.isPrimaryHandle, filepath.Base(h.path))
 		pumpCreationMu.Unlock()
 		return
 	}
@@ -1025,22 +1030,26 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 			// Someone else created it while we were waiting for the semaphore
 			<-masterDataSemaphore // Release our newly acquired slot
 			ps := val.(*NativePumpState)
-			atomic.AddInt32(&ps.refCount, 1)
+			newRefs := atomic.AddInt32(&ps.refCount, 1)
 			h.mu.Lock()
 			h.hasSlot = true
 			h.isWatching = true
 			h.nativeReader = ps.reader
 			h.pumpCancel = ps.cancel
 			h.mu.Unlock()
-			// V701/V702: Same as above — inherit player position to prevent false V286
-			if curPos := atomic.LoadInt64(&ps.playerOff); curPos > 0 {
-				atomic.StoreInt64(&h.lastOff, curPos)
+			// V703b: Same primary/secondary guard as above.
+			if newRefs == 1 {
+				h.isPrimaryHandle = true
+				if curPos := atomic.LoadInt64(&ps.playerOff); curPos > 0 {
+					atomic.StoreInt64(&h.lastOff, curPos)
+				}
 			}
 			pumpCreationMu.Unlock()
 			return
 		}
 
 		h.hasSlot = true
+		h.isPrimaryHandle = true // pump creator is always primary
 		h.nativeReader = nativeBridge.NewStreamReader(finalHash, fileIdx, h.size)
 
 		// Register in activePumps BEFORE releasing lock, but BEFORE doing I/O
@@ -1255,11 +1264,13 @@ func (h *MkvHandle) nativePump(ctx context.Context, startOffset int64, sharedSta
 			return
 		}
 
-		// V260: Advanced Player Sync - Find the most advanced player position among all handles
+		// V260: Advanced Player Sync - Find the most advanced player position among primary handles.
+		// V703b: Secondary handles (Plex CIFS metadata probes, isPrimaryHandle=false) read at
+		// arbitrary offsets — including them in the max causes false V284 jumps of 10GB+.
 		playerOff := int64(0)
 		activeHandles.Range(func(key, value interface{}) bool {
 			handle := key.(*MkvHandle)
-			if handle.path == h.path {
+			if handle.path == h.path && handle.isPrimaryHandle {
 				off := atomic.LoadInt64(&handle.lastOff)
 				if off > playerOff {
 					playerOff = off
@@ -1408,6 +1419,22 @@ func (h *MkvHandle) nativePumpChunk(r *NativeReader, offset, chunkSize, playerOf
 	return false, offset + int64(n)
 }
 
+// shouldInterruptForSeek returns true if a pump interrupt is warranted for a
+// seek detected between prevOff and off.
+//
+// False cases (no interrupt):
+//   - prevOff <= 0: new or freshly-opened handle — no baseline to compare against
+//   - off == 0: Samba/CIFS always issues a header probe at offset 0 on every file
+//     open; this is NOT a user seek and must never restart the pump
+//   - |off - prevOff| <= budget: normal sequential read or small seek within
+//     the read-ahead window
+func shouldInterruptForSeek(prevOff, off, budget int64) bool {
+	if prevOff <= 0 || off == 0 {
+		return false
+	}
+	return off > prevOff+budget || prevOff > off+budget
+}
+
 // safeGo runs a function in a new goroutine with panic recovery.
 // V227: Prevents background tasks from crashing the entire FUSE server.
 func safeGo(fn func()) {
@@ -1496,8 +1523,10 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 
 	// V286: Seek-Aware Interrupt. If player jumped far, wake up the pump immediately.
 	// V560: Skip for pre-confirmation tail reads — served by SSD, pump must not be interrupted.
+	// V703b: shouldInterruptForSeek guards prevOff<=0 (new/reconnected handles) and off==0
+	// (Samba header probes on every open) — neither should ever restart the pump.
 	budget := int64(globalConfig.ReadAheadBudget)
-	if h.nativeReader != nil && !isTailProbe && (off > prevOff+budget || (prevOff > off+budget && prevOff > 0)) {
+	if h.nativeReader != nil && !isTailProbe && shouldInterruptForSeek(prevOff, off, budget) {
 		h.nativeReader.Interrupt()
 		torrstor.ResetShield()
 		logger.Printf("[V286] Interrupt pump for seek+shield reset: %dMB → %dMB",
@@ -1951,11 +1980,14 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 	// V260: Shared Pump Reference Counting
 	if val, ok := activePumps.Load(h.path); ok {
 		ps := val.(*NativePumpState)
-		// V702: Persist the player's last read position into shared pump state.
-		// The next handle to attach (V701) will inherit this instead of the stale
-		// raCache high-water mark, preventing false V286 backward-seek interrupts.
-		if pos := atomic.LoadInt64(&h.lastOff); pos > 0 {
-			atomic.StoreInt64(&ps.playerOff, pos)
+		// V702/V703b: Only primary handles persist their position into ps.playerOff.
+		// Secondary handles (Plex CIFS probes, isPrimaryHandle=false) read at arbitrary
+		// offsets — saving their lastOff would give the next primary reconnect a stale
+		// position from a metadata probe rather than the actual player position.
+		if h.isPrimaryHandle {
+			if pos := atomic.LoadInt64(&h.lastOff); pos > 0 {
+				atomic.StoreInt64(&ps.playerOff, pos)
+			}
 		}
 		// V703: Only decrement refCount if this handle actually incremented it.
 		// Handles that didn't acquire a pump slot (h.hasSlot=false, e.g. probe/header

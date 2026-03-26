@@ -21,6 +21,9 @@ var (
 	isWatchdogRunning atomic.Bool
 	// staticCorruptionCount tracks consecutive corrupted pieces for delayed activation.
 	staticCorruptionCount atomic.Int32
+	// strictCycleCount escalates the clean streak required each time STRICT is re-triggered.
+	// 1st cycle: 30s, 2nd: 60s, 3rd: 90s, 4th+: 120s. Resets on media.stop.
+	strictCycleCount atomic.Int32
 )
 
 // IsResponsive returns the effective state of ResponsiveMode,
@@ -37,6 +40,7 @@ func ResetShield() {
 	shieldActive.Store(false)
 	isWatchdogRunning.Store(false)
 	staticCorruptionCount.Store(0)
+	strictCycleCount.Store(0)
 }
 
 type Piece struct {
@@ -101,7 +105,12 @@ func (p *Piece) MarkNotComplete() error {
 	if settings.GetAdaptiveShield() && settings.GetResponsiveMode() && !shieldActive.Load() {
 		count := staticCorruptionCount.Add(1)
 		if count > 1 {
-			log.TLogln("[AdaptiveShield] Persistent corruption - Force STRICT mode (Shield: ACTIVE)")
+			cycle := strictCycleCount.Add(1)
+			cleanNeeded := int64(30) * int64(cycle)
+			if cleanNeeded > 120 {
+				cleanNeeded = 120
+			}
+			log.TLogln("[AdaptiveShield] Persistent corruption - Force STRICT mode (Shield: ACTIVE, cycle", cycle, ", need", cleanNeeded, "s clean)")
 			shieldActive.Store(true)
 		} else {
 			log.TLogln("[AdaptiveShield] Single corruption detected for piece", p.Id, "- FAST mode preserved, monitoring...")
@@ -117,9 +126,18 @@ func (p *Piece) MarkNotComplete() error {
 				last := lastCorruptionUnix.Load()
 				elapsed := time.Since(time.Unix(last, 0))
 
-				if elapsed > 30*time.Second {
+				cycle := strictCycleCount.Load()
+				cleanNeeded := time.Duration(30*cycle) * time.Second
+				if cleanNeeded < 30*time.Second {
+					cleanNeeded = 30 * time.Second
+				}
+				if cleanNeeded > 120*time.Second {
+					cleanNeeded = 120 * time.Second
+				}
+
+				if elapsed > cleanNeeded {
 					if shieldActive.Swap(false) {
-						log.TLogln("[AdaptiveShield] Clean streak detected (30s) - Restoring FAST mode (Shield: OFF)")
+						log.TLogln("[AdaptiveShield] Clean streak detected (", cleanNeeded.Seconds(), "s) - Restoring FAST mode (Shield: OFF)")
 					}
 					staticCorruptionCount.Store(0)
 					isWatchdogRunning.Store(false)
