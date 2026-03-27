@@ -301,8 +301,8 @@ func runTuningCycle(aiURL string) {
 		return
 	}
 
-	currentSnap := sanitizeStr(fmt.Sprintf("[CPU:%d%% (Peak:%d%%), Buf:%d%%, Peers:%d, Speed:%.1fMB/s (%s)]",
-		int(avgCPU), int(peakCPUCycle), buffer, activeStats.ActivePeers, currSpeedMBs, speedTrendStr))
+	currentSnap := sanitizeStr(fmt.Sprintf("[CPU:%d%% (Peak:%d%%), Buf:%d%%, Peers:%d/%d, Speed:%.1fMB/s (%s)]",
+		int(avgCPU), int(peakCPUCycle), buffer, activeStats.ActivePeers, activeStats.TotalPeers, currSpeedMBs, speedTrendStr))
 
 	metricsHistory = append(metricsHistory, currentSnap)
 	if len(metricsHistory) > 4 {
