@@ -1104,9 +1104,19 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 				resumeOffset = aligned
 			}
 		} else if playerOff < 0 && resumeOffset > 0 {
-			logger.Printf("[V700] New handle: reset stale MaxCachedOffset %.1fMB → 0",
-				float64(resumeOffset)/(1<<20))
-			resumeOffset = 0
+			// V700b: New handle with stale MaxCachedOffset.
+			// If warmup is active, PUMP SKIP already set resumeOffset correctly — keep it.
+			// If no warmup, the offset is truly stale → reset to 0.
+			warmupCoverage := int64(0)
+			if diskWarmup != nil && h.hash != "" {
+				warmupCoverage = diskWarmup.GetAvailableRange(h.hash, h.fileID)
+			}
+			if warmupCoverage == 0 {
+				logger.Printf("[V700] New handle: reset stale MaxCachedOffset %.1fMB → 0",
+					float64(resumeOffset)/(1<<20))
+				resumeOffset = 0
+			}
+			// else: warmup active, PUMP SKIP offset is valid — no reset needed
 		}
 
 		// V310: Resume anchor — if the player is significantly ahead of pumpStart
@@ -1470,7 +1480,10 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 	if h.warmupEligible.Load() {
 		isSeek := false
 		if prevOff == -1 {
-			if off > 1*1024*1024 {
+			// V1.4.8: Use warmupFileSize as threshold — any first read within the warmup
+			// zone (0-64MB) can be served by SSD, so it's not a resume. Only disable
+			// warmup if the first read lands beyond the warmup coverage area.
+			if off >= warmupFileSize {
 				isSeek = true
 			}
 		} else if off != 0 {
