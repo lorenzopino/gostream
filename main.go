@@ -917,9 +917,10 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 		path:             n.vMeta.Path,
 		lastTime:         now,
 		lastOff:          -1,
-		lastActivityTime: now,       // Initialize activity tracking
-		hasWarmup:        hasWarmup, // V272: Scanner-aware retention
+		lastActivityTime: now,            // Initialize activity tracking
+		hasWarmup:        hasWarmup,      // V272: Scanner-aware retention
 	}
+	h.warmupEligible.Store(true) // V1.4.7: Enabled by default, disabled on resume/seek
 
 	if isNative {
 		h.hash = finalHash
@@ -955,12 +956,12 @@ type MkvHandle struct {
 	mu           sync.Mutex // V227: Protecting activity and timing fields
 	pumpCancel   context.CancelFunc
 	hasSlot      bool
-	isWatching   bool      // V258: Handle is attached to a shared pump
-	hasWarmup    bool      // V272: True if both head+tail warmup available at Open time
+	isWatching      bool      // V258: Handle is attached to a shared pump
+	hasWarmup       bool      // V272: True if both head+tail warmup available at Open time
+	warmupEligible  atomic.Bool // V1.4.7: True if TTFF warmup reads allowed (disabled on resume/seek)
 	pumpOnce        sync.Once // V310: lazy pump start on first real Read()
 	isPrimaryHandle bool      // V703b: true for pump creator and primary reconnects (newRefs==1)
-}
-
+	}
 // V264: startNativePump centralizes the logic for acquiring a slot and starting the background pump.
 // It can be called from Open (proactive) or Read (rescue for late resolution).
 func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
@@ -1066,46 +1067,20 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 
 		logger.Printf("[V264] Native Pump Started (Slot Acquired): %s", filepath.Base(h.path))
 
-		// Start background pump — resume from last cached position OR end of disk warmup
+		// Start background pump — resume from last cached position
 		resumeOffset := raCache.MaxCachedOffset(h.path)
 
 		// V261: Strategic pump skip — start pump near end of warmup zone.
+		// This ensures the pump is already buffering data past 64MB when the player
+		// finishes reading the warmup from SSD.
 		if diskWarmup != nil && h.hash != "" {
 			diskOffset := diskWarmup.GetAvailableRange(h.hash, h.fileID)
-
-			// V262: Header Validation (Performed OUTSIDE global mutex)
-			if diskOffset > 0 {
-				buf := make([]byte, 16)
-				nRead, _ := diskWarmup.ReadAt(h.hash, h.fileID, buf, 0)
-				isHeaderValid := false
-				// V262-Fix: require at least 8 bytes; removed the 0x00/0x00/0x00 catch-all
-				// which is a false positive for sparse/zero-filled warmup files.
-				if nRead >= 8 {
-					if (buf[0] == 0x1A && buf[1] == 0x45 && buf[2] == 0xDF && buf[3] == 0xA3) || // MKV EBML
-						(buf[4] == 'f' && buf[5] == 't' && buf[6] == 'y' && buf[7] == 'p') { // MP4/ISO ftyp
-						isHeaderValid = true
-					}
-				}
-
-				if !isHeaderValid {
-					logger.Printf("[DiskWarmup] INVALID HEADER detected for %s. Resetting cache.", h.hash[:8])
-					diskWarmup.RemoveHash(h.hash)
-					diskOffset = 0
-				}
-			}
-
 			if diskOffset > 16*1024*1024 {
 				safetyMargin := int64(16 * 1024 * 1024)
 				skipOffset := diskOffset - safetyMargin
 				if skipOffset > resumeOffset {
 					resumeOffset = skipOffset
-					logger.Printf("[DiskWarmup] PUMP SKIP: Starting from %.1fMB (Disk: %.1fMB, Margin: 16MB)",
-						float64(resumeOffset)/(1<<20), float64(diskOffset)/(1<<20))
-
-					// V261-Preseed: REMOVED. The FUSE Read handler serves [0, warmupFileSize)
-					// directly from SSD before checking raCache, so preseed entries are never
-					// read by the player. They waste raCache budget (48MB) and cause premature
-					// eviction of the boundary chunk at warmupFileSize → playback freeze.
+					logger.Printf("[DiskWarmup] PUMP SKIP: Starting from %.1fMB to bridge SSD handover", float64(resumeOffset)/(1<<20))
 				}
 			}
 		}
@@ -1297,24 +1272,6 @@ func (h *MkvHandle) nativePump(ctx context.Context, startOffset int64, sharedSta
 			pumpedBytes = 0 // reset grace period so throttle doesn't fire immediately
 		}
 
-		// V284b: Backward Snap — symmetric counterpart to V284 forward jump.
-		// Triggered when the player seeks backward past the pump by more than 2×budget.
-		// Scenario: player reads Cues at 1.5GB (V284 jumps pump there), then seeks to
-		// resume offset 380MB. V284 won't fire (player is behind pump). Without V284b the
-		// pump stays at 1.5GB throttled, forcing FetchBlock to serve 380MB alone (up to
-		// 24s). Using 2×jumpThreshold avoids interfering with normal 256MB read-ahead.
-		if playerOff > 0 && offset > playerOff+jumpThreshold*2 {
-			jumpTo := (playerOff / chunkSize) * chunkSize
-			if jumpTo < 0 {
-				jumpTo = 0
-			}
-			logger.Printf("[V284b] Pump backward snap: %dMB → %dMB (player at %dMB, overshoot %dMB)",
-				offset/(1024*1024), jumpTo/(1024*1024), playerOff/(1024*1024),
-				(offset-playerOff)/(1024*1024))
-			offset = jumpTo
-			pumpedBytes = 0
-		}
-
 		// V238: Adaptive Throttle Logic with Grace Period (64MB)
 		if pumpedBytes > 64*1024*1024 {
 			isHealthy := false
@@ -1365,18 +1322,7 @@ func (h *MkvHandle) nativePumpChunk(r *NativeReader, offset, chunkSize, playerOf
 	// Previously, we disabled throttling if playerOff < warmupFileSize.
 	// This caused the pump to race ahead, overwrite the raCache ring buffer,
 	// and cause cache misses at the handover point (64MB).
-	//
-	// V303c: When disk warmup is active and player is still reading from SSD,
-	// tighten the hard limit by one chunkSize. This ensures the pump never fills
-	// raCache to exactly budget bytes (which would evict the boundary chunk at
-	// warmupFileSize on the next Put). Without this, the entry at 64MB gets evicted
-	// ~17s before the player arrives there → FetchBlock + re-download → freeze.
-	// Only applies during warmup phase; once player passes warmupFileSize, full budget.
-	effectiveBudget := budget
-	if diskWarmup != nil && playerOff < warmupFileSize {
-		effectiveBudget = budget - chunkSize
-	}
-	if diff > effectiveBudget {
+	if diff > budget {
 		// Hard limit reached: Wait for player to advance.
 		time.Sleep(100 * time.Millisecond)
 		return false, offset
@@ -1398,17 +1344,6 @@ func (h *MkvHandle) nativePumpChunk(r *NativeReader, offset, chunkSize, playerOf
 			diskWarmup.WriteChunk(h.hash, h.fileID, data, offset)
 		}
 		return false, offset + chunkSize
-	}
-
-	// V303: Skip torrent read for offsets already covered by disk warmup.
-	// Pump jumps to warmupFileSize instantly; player reads warmup from SSD.
-	// No raCache seeding here — SSD serves these offsets directly in FUSE Read().
-	// Seeding would waste raCache budget and cause eviction of the boundary chunk.
-	if diskWarmup != nil && h.hash != "" && offset <= warmupFileSize {
-		warmupCoverage := diskWarmup.GetAvailableRange(h.hash, h.fileID)
-		if warmupCoverage >= offset+chunkSize {
-			return false, offset + chunkSize
-		}
 	}
 
 	end := offset + chunkSize
@@ -1442,17 +1377,12 @@ func (h *MkvHandle) nativePumpChunk(r *NativeReader, offset, chunkSize, playerOf
 //
 // False cases (no interrupt):
 //   - prevOff <= 0: new or freshly-opened handle — no baseline to compare against
-//   - off <= warmupFileSize: any read inside the warmup zone (0–64MB inclusive)
-//     is served directly from the SSD cache and must never restart the pump.
-//     This covers Samba header probes at off=0 AND container header reads
-//     (EBML at 32KB, MP4 atoms at 512KB, etc.) that Infuse/Plex scanners issue
-//     on every open. Without this guard a scan handle with prevOff=7GB reading
-//     at off=32KB fires V286 spuriously, resetting the pump to 0 (confirmed:
-//     59 hits/day in production logs).
+//   - off == 0: Samba/CIFS always issues a header probe at offset 0 on every file
+//     open; this is NOT a user seek and must never restart the pump
 //   - |off - prevOff| <= budget: normal sequential read or small seek within
 //     the read-ahead window
 func shouldInterruptForSeek(prevOff, off, budget int64) bool {
-	if prevOff <= 0 || off <= warmupFileSize {
+	if prevOff <= 0 || off == 0 {
 		return false
 	}
 	return off > prevOff+budget || prevOff > off+budget
@@ -1521,6 +1451,30 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 	prevOff := atomic.LoadInt64(&h.lastOff)
 	atomic.StoreInt64(&h.lastOff, off)
 
+	// V1.4.7: TTFF Warmup Eligibility (Atomic).
+	// If first read is > 1MB, it's a Resume. If we jump, it's a Seek.
+	// In both cases, we disable warmup SSD reads to avoid non-alignment and seek failures.
+	// NOTE: We only disable AFTER checking if we can serve the current read from SSD
+	// (this preserves the initial 'probatura' at offset 0).
+	if h.warmupEligible.Load() {
+		isSeek := false
+		if prevOff == -1 {
+			if off > 1*1024*1024 {
+				isSeek = true
+			}
+		} else if off != 0 {
+			// V1.4.6: Stricter seek detection for warmup (no prevOff <= 0 guard)
+			budget := int64(globalConfig.ReadAheadBudget)
+			if off > prevOff+budget || prevOff > off+budget {
+				isSeek = true
+			}
+		}
+		if isSeek {
+			h.warmupEligible.Store(false)
+			logger.Printf("[V1.4.7] Seek/Resume detected (off=%dMB): Warmup SSD disabled.", off/(1024*1024))
+		}
+	}
+
 	// V560: Detect pre-confirmation tail probe to suppress V286 interrupt.
 	// V560-Dynamic: Threshold is 5% of file size, capped between 64MB and 2GB.
 	// This covers "far" metadata probes in large Remux files (e.g. The Long Walk).
@@ -1552,7 +1506,8 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 	if h.nativeReader != nil && !isTailProbe && shouldInterruptForSeek(prevOff, off, budget) {
 		h.nativeReader.Interrupt()
 		torrstor.ResetShield()
-		logger.Printf("[V286] Interrupt pump for seek+shield reset: %dMB → %dMB",
+		h.warmupEligible.Store(false) // V1.4.7: Disable warmup for this handle after any seek
+		logger.Printf("[V286] Interrupt pump for seek+shield reset: %dMB → %dMB (Warmup SSD disabled)",
 			prevOff/(1024*1024), off/(1024*1024))
 	}
 
@@ -1560,7 +1515,8 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 	// V261: Read directly into dest — no pool buffer, no 2MB over-read.
 	// V304b: Extended to off<=warmupFileSize so the boundary chunk (written by pump in
 	// session 1) is served from SSD in session 2, eliminating the FetchBlock stall.
-	if diskWarmup != nil && h.hash != "" && off <= warmupFileSize {
+	// V1.4.7: Added atomic warmupEligible guard to skip SSD during resume/seek.
+	if diskWarmup != nil && h.hash != "" && h.warmupEligible.Load() && off <= warmupFileSize {
 		n, _ := diskWarmup.ReadAt(h.hash, h.fileID, dest, off)
 		if n > 0 {
 			timing.UsedCache = true
@@ -1582,7 +1538,8 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 	// V265: Tail warmup — serve last 16MB from SSD for MKV Cues/seek index.
 	// V560: Discovery-Only Tail Warmup. isTailProbe=true means off is in tail area AND
 	// ConfirmedAt.IsZero(). Post-confirmation tail reads fall through to the pump for fresh data.
-	if isTailProbe && diskWarmup != nil {
+	// V1.4.7: Added atomic warmupEligible guard to skip SSD during resume/seek.
+	if isTailProbe && diskWarmup != nil && h.warmupEligible.Load() {
 		// V560-Fix: Tail reads must NOT steer the pump. Restore lastOff to prevOff so
 		// V284 doesn't jump the pump to the cold end-of-file on the next tick.
 		atomic.StoreInt64(&h.lastOff, prevOff)
