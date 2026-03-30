@@ -161,6 +161,7 @@ func StartAITuner(ctx context.Context, aiURL string) {
 
 var lastActiveHash string
 var lastAnnounceAt time.Time
+var wasIdle bool // true when count==0 in last cycle — triggers skipAICycles on next torrent
 
 func runTuningCycle(aiURL string) {
 	if aiDisabled.Load() {
@@ -186,6 +187,7 @@ func runTuningCycle(aiURL string) {
 				lastTimeout = defaultTimeout
 			}
 		}
+		wasIdle = true
 		atomic.StoreInt32(&CurrentLimit, 0) // fall back to globalConfig.MasterConcurrencyLimit
 		lastActiveHash = ""
 		return
@@ -242,8 +244,16 @@ func runTuningCycle(aiURL string) {
 	}
 
 	currentHash := activeT.Hash().String()
-	if lastActiveHash != "" && currentHash != lastActiveHash {
-		log.Printf("[AI-Pilot] Context Change Detected: Applying defaults (Conns:%d Timeout:%ds) for new torrent.", defaultConns, defaultTimeout)
+	contextChanged := lastActiveHash != "" && currentHash != lastActiveHash
+	freshStart := wasIdle && lastActiveHash == ""
+	wasIdle = false
+
+	if contextChanged || freshStart {
+		reason := "Context Change"
+		if freshStart {
+			reason = "Fresh Start"
+		}
+		log.Printf("[AI-Pilot] %s Detected: Applying defaults (Conns:%d Timeout:%ds) for new torrent.", reason, defaultConns, defaultTimeout)
 		metricsHistory = nil
 		torrentSpeedAvg = nil
 		cpuUsageAvg = nil
@@ -253,7 +263,7 @@ func runTuningCycle(aiURL string) {
 		pulseCounter = 0
 		peakCPUCycle = 0
 		lastAnnounceAt = time.Time{}
-		skipAICycles = 2 // skip 2 AI cycles (~6-10 min) to let reset complete
+		skipAICycles = 2 // skip 2 AI cycles to allow peer discovery at full connections
 		if activeT.Torrent != nil {
 			activeT.Torrent.SetMaxEstablishedConns(defaultConns)
 			activeT.AddExpiredTime(time.Duration(defaultTimeout) * time.Second)
