@@ -1105,18 +1105,20 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 			}
 		} else if playerOff < 0 && resumeOffset > 0 {
 			// V700b: New handle with stale MaxCachedOffset.
-			// If warmup is active, PUMP SKIP already set resumeOffset correctly — keep it.
-			// If no warmup, the offset is truly stale → reset to 0.
+			// Reset if warmup absent, OR if resumeOffset >= warmupFileSize.
+			// When resumeOffset >= warmupFileSize, PUMP SKIP cannot fire (condition:
+			// resumeOffset < warmupFileSize), so keeping the stale offset creates a
+			// dead zone from warmupFileSize to resumeOffset where raCache is empty.
 			warmupCoverage := int64(0)
 			if diskWarmup != nil && h.hash != "" {
 				warmupCoverage = diskWarmup.GetAvailableRange(h.hash, h.fileID)
 			}
-			if warmupCoverage == 0 {
+			if warmupCoverage == 0 || resumeOffset >= warmupFileSize {
 				logger.Printf("[V700] New handle: reset stale MaxCachedOffset %.1fMB → 0",
 					float64(resumeOffset)/(1<<20))
 				resumeOffset = 0
 			}
-			// else: warmup active, PUMP SKIP offset is valid — no reset needed
+			// else: warmup active, resumeOffset < warmupFileSize — PUMP SKIP will fire correctly
 		}
 
 		// V310: Resume anchor — if the player is significantly ahead of pumpStart
