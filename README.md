@@ -1,6 +1,5 @@
 <p align="center">
   <img src="docs/screenshots/gostream_logo.png" alt="GoStream" />
-  <br />
   <strong><big>GoStream</big></strong>
 </p>
   <p align="center">
