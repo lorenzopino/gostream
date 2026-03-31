@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // DailyJobConfig: task that can run on specific days of the week.
@@ -135,6 +137,23 @@ type Config struct {
 
 	// --- Built-in Sync Scheduler ---
 	Scheduler SchedulerConfig `json:"scheduler"`
+
+	// --- Telemetry (V1.4.7) ---
+	TelemetryID     string `json:"telemetry_id"`
+	EnableTelemetry bool   `json:"telemetry"`
+	TelemetryURL    string `json:"telemetry_url"`
+}
+
+// Save persists the current configuration to config.json
+func (c *Config) Save() error {
+	// 1. Marshal config to JSON
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	// 2. Write to file
+	return os.WriteFile(c.ConfigPath, data, 0644)
 }
 
 // LoadConfig loads configuration from environment variables with defaults
@@ -180,6 +199,9 @@ func LoadConfig() Config {
 		AIURL:           "http://127.0.0.1:8085", // Default Pi internal AI port (V1.4.5)
 		ProxyListenPort: 8080,
 		MetricsPort:     8096,
+
+		EnableTelemetry: true,
+		TelemetryURL:    "https://telemetry.gostream.workers.dev",
 
 		// Legacy Fixed Defaults
 		DefaultFileSize:         30 * 1024 * 1024 * 1024,
@@ -236,6 +258,15 @@ func LoadConfig() Config {
 
 	// 5. Finalize and map derived fields
 	cfg.finalize()
+
+	// 6. Generate Telemetry ID if missing
+	if cfg.TelemetryID == "" {
+		cfg.TelemetryID = uuid.New().String()
+		log.Printf("[Telemetry] Generated new ID: %s", cfg.TelemetryID)
+		if err := cfg.Save(); err != nil {
+			log.Printf("[Telemetry] ERROR: Failed to persist generated ID: %v", err)
+		}
+	}
 
 	return cfg
 }

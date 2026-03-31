@@ -2705,6 +2705,7 @@ func main() {
 	source, mount := flag.Arg(0), flag.Arg(1)
 
 	globalConfig = LoadConfig()
+	SendHeartbeat(globalConfig)
 	logger.Printf("[DEBUG] BlockListURL loaded: '%s'", globalConfig.BlockListURL)
 
 	if dbPath != "" {
