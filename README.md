@@ -1,5 +1,8 @@
 <p align="center">
-  <h1 align="center">🎬 GoStream</h1>
+  <img src="docs/screenshots/gostream_logo.png" alt="GoStream" />
+  <br />
+  <strong><big>GoStream</big></strong>
+</p>
   <p align="center">
     <strong>The most advanced BitTorrent engine and FUSE virtual filesystem for live streaming to your private Plex/Jellyfin library. Forget Real-Debrid.</strong>
   </p>
