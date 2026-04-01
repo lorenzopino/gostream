@@ -1758,7 +1758,22 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 		logger.Printf("[Pump] Release handle for %s (Remaining Refs: %d)", filepath.Base(h.path), newRefs)
 
 		if newRefs <= 0 {
-			// Grace period: 30s normally, 90s for confirmed playback (Plex CIFS reconnects can take >30s).
+			// V306: If playback is healthy (webhook media.play confirmed), skip grace period.
+			// The pump stays alive until media.stop webhook sets IsHealthy=false and kills it.
+			// This survives long pauses, buffering gaps, and Apple TV re-reads without
+			// killing the pump and causing freeze on resume.
+			if pbVal, ok := playbackRegistry.Load(h.path); ok {
+				if pbState := pbVal.(*PlaybackState); pbState.IsHealthy {
+					logger.Printf("[V306] Healthy playback — pump stays alive (no grace period) for %s", filepath.Base(h.path))
+					// Stop any pending grace timer from a previous release cycle
+					if oldTimer, ok := pumpTimers.LoadAndDelete(h.path); ok {
+						oldTimer.(*time.Timer).Stop()
+					}
+					goto skipGrace
+				}
+			}
+
+			// Grace period: 30s for unconfirmed probes/scans.
 			graceDuration := 30 * time.Second
 			if pbVal, ok := playbackRegistry.Load(h.path); ok {
 				if pbState := pbVal.(*PlaybackState); !pbState.ConfirmedAt.IsZero() {
@@ -1785,6 +1800,8 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 			pumpTimers.Store(h.path, t)
 			logger.Printf("[V420] Last handle closed: Shared Pump entering %s grace period for %s", graceDuration, filepath.Base(h.path))
 		}
+
+	skipGrace:
 	}
 
 	// Nil local reference only; pump goroutine owns the reader lifecycle via captured copy.

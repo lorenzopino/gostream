@@ -1168,8 +1168,8 @@ func (t *Torrent) AvailableRange(off, max int64, responsive bool) (avail int64) 
 		avail += canServe
 		off += canServe
 		max -= canServe
-		
-		// If we didn't fill the whole request from this piece, 
+
+		// If we didn't fill the whole request from this piece,
 		// we must stop or continue to next piece if this one was actually "effectively complete"
 		if currBit < pieceEndBit {
 			break // Piece has a gap
@@ -2593,6 +2593,26 @@ func (t *Torrent) dialTimeout() time.Duration {
 
 func (t *Torrent) piece(i int) *Piece {
 	return &t.pieces[i]
+}
+
+// V305: SetPiecePriorities sets priorities for multiple pieces in a single lock acquisition.
+// Avoids N separate lock/unlock cycles when updating piece priorities.
+func (t *Torrent) SetPiecePriorities(priorities map[int]piecePriority) {
+	t.cl.lock()
+	defer t.cl.unlock()
+	for i, prio := range priorities {
+		if pp, ok := t.pieceOk(i); ok {
+			pp.priority = prio
+			t.updatePiecePriority(pieceIndex(i), "Torrent.SetPiecePriorities")
+		}
+	}
+}
+
+func (t *Torrent) pieceOk(i int) (*Piece, bool) {
+	if i >= 0 && i < len(t.pieces) {
+		return &t.pieces[i], true
+	}
+	return nil, false
 }
 
 func (t *Torrent) onWriteChunkErr(err error) {

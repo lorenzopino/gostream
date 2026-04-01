@@ -64,6 +64,10 @@ type Cache struct {
 	// Eliminates O(N_cached) PieceState(rLock) calls per cleanup cycle.
 	localPriority map[int]torrenttypes.PiecePriority
 	muPriority    sync.Mutex // protects localPriority
+
+	// V305: Bitmap for O(1) piece-in-range check during eviction.
+	// Replaces O(N*R) inRanges() scan with O(N) array lookup.
+	pieceInRange []bool
 }
 
 func NewCache(capacity int64, storage *Storage) *Cache {
@@ -104,6 +108,7 @@ func (c *Cache) Init(info *metainfo.Info, hash metainfo.Hash) {
 	for i := 0; i < c.pieceCount; i++ {
 		c.pieces[i] = NewPiece(i, c)
 	}
+	c.pieceInRange = make([]bool, c.pieceCount)
 }
 
 func (c *Cache) SetTorrent(torr *torrent.Torrent) {
@@ -310,21 +315,30 @@ func (c *Cache) getRemPieces() []*Piece {
 	c.muReaders.RUnlock()
 	ranges = mergeRange(ranges)
 
+	// V305: Rebuild bitmap for O(1) piece-in-range checks
+	for i := range c.pieceInRange {
+		c.pieceInRange[i] = false
+	}
+	for _, rng := range ranges {
+		start := int(rng.File.Offset() / c.pieceLength)
+		end := int((rng.File.Offset() + rng.File.Length()) / c.pieceLength)
+		if end >= c.pieceCount {
+			end = c.pieceCount - 1
+		}
+		for i := start; i <= end; i++ {
+			c.pieceInRange[i] = true
+		}
+	}
+
 	for id, p := range c.pieces {
 		if p.Size > 0 {
 			fill += p.Size
 		}
-		if len(ranges) > 0 {
-			if !inRanges(ranges, id) {
-				if p.Size > 0 && !c.isIdInFileBE(ranges, id) {
-					piecesRemove = append(piecesRemove, p)
-				}
-			}
-		} else {
-			// on preload clean
-			if p.Size > 0 && !c.isIdInFileBE(ranges, id) {
-				piecesRemove = append(piecesRemove, p)
-			}
+		if c.pieceInRange[id] {
+			continue
+		}
+		if p.Size > 0 && !c.isIdInFileBE(ranges, id) {
+			piecesRemove = append(piecesRemove, p)
 		}
 	}
 
@@ -391,39 +405,41 @@ func (c *Cache) setLoadPriority(ranges []Range) {
 			count = 1
 		}
 
-		// V279: Hold muPriority for the loop to check/update localPriority without
-		// per-piece lock overhead. SetPriority acquires cl.lock() internally (safe,
-		// no circular dep since muPriority is torrstor-internal only).
+		// V305: Accumulate priorities in a batch map, apply in a single lock acquisition.
+		// Replaces N separate SetPriority() calls (each acquiring cl.lock()) with one.
+		batch := make(map[int]torrenttypes.PiecePriority)
 		limit := 0
 		c.muPriority.Lock()
 		for i := readerPos; i < end && i < c.pieceCount && limit < count; i++ {
 			if !c.pieces[i].Complete {
+				var prio torrenttypes.PiecePriority
 				if i == readerPos {
-					c.torrent.Piece(i).SetPriority(torrent.PiecePriorityNow)
-					c.localPriority[i] = torrent.PiecePriorityNow
+					prio = torrent.PiecePriorityNow
 				} else if i == readerPos+1 {
-					c.torrent.Piece(i).SetPriority(torrent.PiecePriorityNext)
-					c.localPriority[i] = torrent.PiecePriorityNext
+					prio = torrent.PiecePriorityNext
 				} else if i > readerPos && i <= readerRAHPos {
-					c.torrent.Piece(i).SetPriority(torrent.PiecePriorityReadahead)
-					c.localPriority[i] = torrent.PiecePriorityReadahead
+					prio = torrent.PiecePriorityReadahead
 				} else if i > readerRAHPos && i <= readerRAHPos+highPriorityWindow {
-					// V279: localPriority replaces PieceState(rLock) guard
 					if c.localPriority[i] != torrent.PiecePriorityHigh {
-						c.torrent.Piece(i).SetPriority(torrent.PiecePriorityHigh)
-						c.localPriority[i] = torrent.PiecePriorityHigh
+						prio = torrent.PiecePriorityHigh
 					}
 				} else if i > readerRAHPos+highPriorityWindow {
-					// V279: localPriority replaces PieceState(rLock) guard
 					if c.localPriority[i] != torrent.PiecePriorityNormal {
-						c.torrent.Piece(i).SetPriority(torrent.PiecePriorityNormal)
-						c.localPriority[i] = torrent.PiecePriorityNormal
+						prio = torrent.PiecePriorityNormal
 					}
+				}
+				if prio != 0 {
+					c.localPriority[i] = prio
+					batch[i] = prio
 				}
 				limit++
 			}
 		}
 		c.muPriority.Unlock()
+
+		if len(batch) > 0 {
+			c.torrent.SetPiecePriorities(batch)
+		}
 	}
 	c.muReaders.RUnlock()
 }
@@ -536,4 +552,3 @@ func (c *Cache) GetCapacity() int64 {
 	}
 	return c.capacity
 }
-
