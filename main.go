@@ -8,13 +8,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/cespare/xxhash/v2"
 	"gostream/ai"
 	server "gostream/internal/gostorm"
 	"gostream/internal/gostorm/settings"
 	torrstor "gostream/internal/gostorm/torr/storage/torrstor"
 	tsutils "gostream/internal/gostorm/utils"
 	"gostream/internal/gostorm/web"
-	"github.com/cespare/xxhash/v2"
 	"io"
 	"log"
 	"net"
@@ -77,8 +77,8 @@ func GetEffectiveConcurrencyLimit() int {
 type PlaybackState struct {
 	mu          sync.RWMutex
 	Path        string
-	Hash        string    // InfoHash for GoStorm priority management
-	ImdbID      string    // IMDB ID from MKV line 4, used for webhook matching
+	Hash        string // InfoHash for GoStorm priority management
+	ImdbID      string // IMDB ID from MKV line 4, used for webhook matching
 	OpenedAt    time.Time
 	ConfirmedAt time.Time // Set when Plex webhook arrives
 	IsHealthy   bool      // Confirmed by Plex
@@ -116,11 +116,11 @@ var readBufferPool *sync.Pool
 var reImdbID = regexp.MustCompile(`"imdb://(tt\d+)"`)
 var reEmptyNumber = regexp.MustCompile(`"(\w+)":\s*,`)
 
-var activeHandles sync.Map    // key: *MkvHandle, value: bool
+var activeHandles sync.Map      // key: *MkvHandle, value: bool
 var inFlightPrefetches sync.Map // key: "path:offset", value: bool
-var activePumps sync.Map      // Map[string]*NativePumpState — one pump per file path
-var pumpTimers sync.Map       // key: path, value: *time.Timer
-var priorityTimers sync.Map   // key: path, value: *time.Timer
+var activePumps sync.Map        // Map[string]*NativePumpState — one pump per file path
+var pumpTimers sync.Map         // key: path, value: *time.Timer
+var priorityTimers sync.Map     // key: path, value: *time.Timer
 
 // Serializes concurrent pump creation for the same file.
 var pumpCreationMu sync.Mutex
@@ -800,8 +800,8 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 		path:             n.vMeta.Path,
 		lastTime:         now,
 		lastOff:          -1,
-		lastActivityTime: now,            // Initialize activity tracking
-		hasWarmup:        headReady,      // Eligibility for fast SSD probes
+		lastActivityTime: now,       // Initialize activity tracking
+		hasWarmup:        headReady, // Eligibility for fast SSD probes
 	}
 	h.state.Store(stateWarmup) // Initial state; transitions to stateStreaming on seek/resume.
 
@@ -824,7 +824,7 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 // A handle transitions one-way: stateWarmup → stateStreaming or stateTailProbe.
 const (
 	stateWarmup    uint32 = 0 // Initial: SSD warmup eligible (TTFF phase)
-	stateStreaming  uint32 = 1 // Pump-only streaming; no SSD warmup
+	stateStreaming uint32 = 1 // Pump-only streaming; no SSD warmup
 	stateTailProbe uint32 = 2 // Plex scan probe: tail region, stateless FetchBlock
 )
 
@@ -851,19 +851,20 @@ type MkvHandle struct {
 	monitorStarted   bool
 	lastGlobalUpdate time.Time
 
-	nativeReader *NativeReader
-	hash         string
-	magnet       string
-	fileID       int
-	mu           sync.Mutex
-	pumpCancel   context.CancelFunc
-	hasSlot      bool
+	nativeReader    *NativeReader
+	hash            string
+	magnet          string
+	fileID          int
+	mu              sync.Mutex
+	pumpCancel      context.CancelFunc
+	hasSlot         bool
 	isWatching      bool
-	hasWarmup       bool         // true if both head+tail warmup available at Open time
+	hasWarmup       bool          // true if both head+tail warmup available at Open time
 	state           atomic.Uint32 // handleState: stateWarmup | stateStreaming | stateTailProbe
 	pumpOnce        sync.Once
 	isPrimaryHandle bool // true for pump creator and primary reconnects (refCount 0→1)
 }
+
 // startNativePump acquires a slot and starts the background pump.
 // Called from Open (proactive) or Read (rescue for late resolution).
 func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
@@ -1210,9 +1211,9 @@ func (h *MkvHandle) nativePumpChunk(r *NativeReader, offset, chunkSize, playerOf
 		return false, offset + chunkSize
 	}
 
-	// Skip warmup zone during initial play (SSD serves 0-64MB); pump jumps ahead to pre-fill raCache.
+	// Skip warmup zone during initial play (SSD serves 0-80MB); pump jumps ahead to pre-fill raCache.
 	// Gated on stateWarmup to avoid skip on resume/seek.
-	if diskWarmup != nil && h.hash != "" && h.state.Load() == stateWarmup && offset <= warmupFileSize {
+	if diskWarmup != nil && h.hash != "" && h.state.Load() == stateWarmup {
 		warmupCoverage := diskWarmup.GetAvailableRange(h.hash, h.fileID)
 		if warmupCoverage >= offset+chunkSize {
 			return false, offset + chunkSize
@@ -1360,22 +1361,25 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 			prevOff/(1024*1024), off/(1024*1024), stateName(stateWarmup), stateName(stateStreaming))
 	}
 
-	// Serve first 64MB from SSD warmup; stateWarmup gate skips SSD on resume/seek.
-	if diskWarmup != nil && h.hash != "" && h.state.Load() == stateWarmup && off <= warmupFileSize {
-		n, _ := diskWarmup.ReadAt(h.hash, h.fileID, dest, off)
-		if n > 0 {
-			timing.UsedCache = true
-			timing.BytesRead = n
-			if off == 0 {
-				logger.Printf("[DiskWarmup] HIT %s off=0 (%dKB)", filepath.Base(h.path), n/1024)
-			}
-			atomic.StoreInt64(&h.lastOff, off)
+	// Serve warmup zone from SSD (up to 80MB with boundary chunk); stateWarmup gate skips SSD on resume/seek.
+	if diskWarmup != nil && h.hash != "" && h.state.Load() == stateWarmup {
+		warmupCoverage := diskWarmup.GetAvailableRange(h.hash, h.fileID)
+		if off < warmupCoverage {
+			n, _ := diskWarmup.ReadAt(h.hash, h.fileID, dest, off)
+			if n > 0 {
+				timing.UsedCache = true
+				timing.BytesRead = n
+				if off == 0 {
+					logger.Printf("[DiskWarmup] HIT %s off=0 (%dKB)", filepath.Base(h.path), n/1024)
+				}
+				atomic.StoreInt64(&h.lastOff, off)
 
-			h.mu.Lock()
-			h.lastLen = n
-			h.lastTime = now
-			h.mu.Unlock()
-			return fuse.ReadResultData(dest[:n]), 0
+				h.mu.Lock()
+				h.lastLen = n
+				h.lastTime = now
+				h.mu.Unlock()
+				return fuse.ReadResultData(dest[:n]), 0
+			}
 		}
 	}
 
@@ -2779,9 +2783,9 @@ func main() {
 			MaxConnsPerHost:     globalConfig.MaxConnsPerHost,
 
 			ResponseHeaderTimeout: globalConfig.HTTPReadTimeout,
-			IdleConnTimeout:       90 * time.Second,             // Close idle connections after 90s
-			TLSHandshakeTimeout:   10 * time.Second,             // TLS handshake timeout (even for localhost)
-			ExpectContinueTimeout: 1 * time.Second,              // Expect: 100-continue timeout
+			IdleConnTimeout:       90 * time.Second, // Close idle connections after 90s
+			TLSHandshakeTimeout:   10 * time.Second, // TLS handshake timeout (even for localhost)
+			ExpectContinueTimeout: 1 * time.Second,  // Expect: 100-continue timeout
 
 			// HTTP protocol settings - match Python defaults
 			DisableKeepAlives:  false, // Enable HTTP keepalive (Python default)
@@ -3085,7 +3089,7 @@ func main() {
 // Level 1 (3 hits / 180s): interrupt all pumps. Level 2 (10 hits / 600s): graceful restart.
 func smbdWatchdog() {
 	const checkInterval = 60 * time.Second
-	const unblockThreshold = 3 // 180s - Emergency unblock (interrupt all pumps)
+	const unblockThreshold = 3  // 180s - Emergency unblock (interrupt all pumps)
 	const restartThreshold = 10 // 600s - Full restart (persistent stall)
 	consecutiveHits := 0
 
