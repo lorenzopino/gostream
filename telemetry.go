@@ -22,7 +22,7 @@ func SendHeartbeat(cfg Config) {
 
 		payload := map[string]string{
 			"id":      cfg.TelemetryID,
-			"version": "V1.6.3", // Update this as needed
+			"version": AppVersion,
 			"arch":    runtime.GOARCH,
 			"os":      runtime.GOOS,
 		}
