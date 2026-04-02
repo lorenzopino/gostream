@@ -89,8 +89,8 @@ func (r *requestStrategyPiece) Request() bool {
 	return !r.t.ignorePieceForRequests(r.index)
 }
 
-func (r *requestStrategyPiece) NumPendingChunks() int {
-	return int(r.t.pieceNumPendingChunks(r.index))
+func (r *requestStrategyPiece) CountUnverified() bool {
+	return r.t.piece(r.index).hashing || r.t.piece(r.index).marking || r.t.piece(r.index).queuedForHash()
 }
 
 var _ request_strategy.Piece = (*requestStrategyPiece)(nil)

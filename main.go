@@ -3118,18 +3118,17 @@ func smbdWatchdog() {
 			consecutiveHits++
 			logger.Printf("[Watchdog] D-state smbd detected (%d/%d)", consecutiveHits, restartThreshold)
 
-			// Level 1 (3 consecutive hits): interrupt all pumps to unblock hung FUSE reads.
+			// Level 1 (3 consecutive hits): soft-interrupt all pumps to unblock hung FUSE reads.
+			// Only closes pipe readers — pumps stay alive and will retry on next FUSE read.
+			// Preserves pump survival during temporary peer shortages (swarm may recover).
 			if consecutiveHits == unblockThreshold {
-				logger.Printf("[Watchdog] D-state persistent for %ds — triggering EMERGENCY UNBLOCK",
+				logger.Printf("[Watchdog] D-state persistent for %ds — triggering soft interrupt (pumps stay alive)",
 					consecutiveHits*int(checkInterval/time.Second))
 				activePumps.Range(func(key, value interface{}) bool {
 					if ps, ok := value.(*NativePumpState); ok {
 						if ps.reader != nil {
-							logger.Printf("[Watchdog] Interrupting pump: %s", filepath.Base(ps.path))
+							logger.Printf("[Watchdog] Soft-interrupting pump: %s", filepath.Base(ps.path))
 							ps.reader.Interrupt()
-						}
-						if ps.cancel != nil {
-							ps.cancel() // Stop the background pumping loop
 						}
 					}
 					return true
