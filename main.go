@@ -15,6 +15,7 @@ import (
 	torrstor "gostream/internal/gostorm/torr/storage/torrstor"
 	tsutils "gostream/internal/gostorm/utils"
 	"gostream/internal/gostorm/web"
+	"gostream/internal/prowlarr"
 	"io"
 	"log"
 	"net"
@@ -63,6 +64,9 @@ var nativeBridge *NativeClient
 var globalCleanupManager *CleanupManager
 var globalTorrentRemover *TorrentRemover
 var globalConfig Config
+
+// Global Prowlarr client for indexer queries (nil when disabled).
+var prowlarrClient *prowlarr.Client
 
 // GetEffectiveConcurrencyLimit returns AI limit if set, otherwise globalConfig default
 func GetEffectiveConcurrencyLimit() int {
@@ -2726,6 +2730,7 @@ func main() {
 	source, mount := flag.Arg(0), flag.Arg(1)
 
 	globalConfig = LoadConfig()
+	prowlarrClient = prowlarr.NewClient(globalConfig.Prowlarr)
 	SendHeartbeat(globalConfig)
 	logger.Printf("[DEBUG] BlockListURL loaded: '%s'", globalConfig.BlockListURL)
 
@@ -2980,6 +2985,7 @@ func main() {
 			// Reload in memory (V1.4.0 Live Update)
 			oldURL := globalConfig.BlockListURL
 			globalConfig = LoadConfig()
+			prowlarrClient = prowlarr.NewClient(globalConfig.Prowlarr)
 			if globalConfig.BlockListURL != "" && globalConfig.BlockListURL != oldURL {
 				safeGo(func() {
 					updateBlockList(globalConfig.BlockListURL)
@@ -2988,6 +2994,35 @@ func main() {
 			logger.Printf("[Config] Updated via Dashboard API")
 			w.WriteHeader(200)
 		}
+	})
+
+	http.HandleFunc("/api/prowlarr/search", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if prowlarrClient == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			w.Write([]byte(`[]`))
+			return
+		}
+		imdbID := r.URL.Query().Get("imdb_id")
+		contentType := r.URL.Query().Get("type")
+		title := r.URL.Query().Get("title")
+		if imdbID == "" {
+			http.Error(w, "missing imdb_id parameter", http.StatusBadRequest)
+			return
+		}
+		if contentType == "" {
+			contentType = "movie"
+		}
+		streams := prowlarrClient.FetchTorrents(imdbID, contentType, title)
+		if streams == nil {
+			streams = []prowlarr.Stream{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(streams)
 	})
 
 	http.HandleFunc("/api/restart", func(w http.ResponseWriter, r *http.Request) {

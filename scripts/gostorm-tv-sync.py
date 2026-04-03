@@ -82,7 +82,6 @@ def _signal_handler(signum, frame):
 signal.signal(signal.SIGTERM, _signal_handler)
 signal.signal(signal.SIGINT, _signal_handler)
 from urllib.parse import quote
-from prowlarr_client import ProwlarrClient
 
 
 class EpisodeInfo(NamedTuple):
@@ -142,8 +141,9 @@ class GoStormTV:
         self._trackers_cache: List[str] = []
         self._trackers_cache_time = 0
         
-        # Prowlarr Adapter
-        self.prowlarr = ProwlarrClient()
+        # Prowlarr — calls gostream Go endpoint at /api/prowlarr/search
+        _metrics_port = _cfg.get('metrics_port', 8096)
+        self._gostream_url = f"http://127.0.0.1:{_metrics_port}"
 
         # Ensure directories exist
         for d in [self.STATE_DIR, self.TV_DIR, os.path.dirname(self.LOG_FILE)]:
@@ -200,6 +200,23 @@ class GoStormTV:
     def log(self, level: str, msg: str):
         log_func = getattr(self.logger, "warning" if level.lower() == "warn" else level.lower(), self.logger.info)
         log_func(msg)
+
+    def _fetch_prowlarr(self, imdb_id: str, content_type: str, title: str = "") -> list:
+        params = {'imdb_id': imdb_id, 'type': content_type}
+        if title:
+            params['title'] = title
+        try:
+            resp = self.session.get(
+                f'{self._gostream_url}/api/prowlarr/search',
+                params=params,
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            self.log("WARN", f'Prowlarr Go endpoint returned HTTP {resp.status_code}')
+        except requests.RequestException as e:
+            self.log("ERROR", f'Prowlarr Go request failed: {e}')
+        return []
 
     # ===== EPISODE REGISTRY =====
 
@@ -844,9 +861,9 @@ class GoStormTV:
         all_streams = []
         seen_hashes = set()
 
-        # 1. Try Prowlarr Adapter First (Primary)
+        # 1. Try Prowlarr Adapter First (Go endpoint)
         try:
-            prowlarr_streams = self.prowlarr.fetch_torrents(imdb_id, "series", title=show_name)
+            prowlarr_streams = self._fetch_prowlarr(imdb_id, "series", title=show_name)
             if prowlarr_streams:
                 self.log("INFO", f"✅ Prowlarr: found {len(prowlarr_streams)} streams for {imdb_id}")
                 for s in prowlarr_streams:

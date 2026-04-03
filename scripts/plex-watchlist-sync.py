@@ -23,7 +23,6 @@ from urllib.parse import quote
 
 import requests
 import urllib3
-from prowlarr_client import ProwlarrClient
 
 
 def _load_gostream_config() -> dict:
@@ -113,7 +112,7 @@ _trackers_cache_time: float = 0.0
 _last_api_call: float = 0.0
 MIN_API_INTERVAL = 0.5   # seconds between external API calls
 
-prowlarr = ProwlarrClient()
+GOSTORM_URL = _cfg.get('gostorm_url', 'http://127.0.0.1:8090').replace(':8090', ':8096')
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -361,12 +360,18 @@ def is_already_present(item: Dict, imdb_set: set, title_index: Dict) -> bool:
 
 def get_torrentio_streams(imdb_id: str) -> List[Dict]:
     """Fetch movie streams from Prowlarr (primary) or Torrentio (fallback) for the given IMDB ID."""
-    # 1. Prowlarr Search
+    # 1. Prowlarr Search (Go endpoint)
     try:
-        streams = prowlarr.fetch_torrents(imdb_id, "movie")
-        if streams:
-            log.info(f"✅ Prowlarr: found {len(streams)} streams for {imdb_id}")
-            return streams
+        resp = session.get(
+            f'{GOSTORM_URL}/api/prowlarr/search',
+            params={'imdb_id': imdb_id, 'type': 'movie'},
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            streams = resp.json()
+            if streams:
+                log.info(f"✅ Prowlarr: found {len(streams)} streams for {imdb_id}")
+                return streams
     except Exception as e:
         log.debug(f"Prowlarr fetch error for {imdb_id}: {e}")
 

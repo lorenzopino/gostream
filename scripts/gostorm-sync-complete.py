@@ -14,7 +14,6 @@ import sys
 import time
 import requests
 import urllib3
-from prowlarr_client import ProwlarrClient
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import subprocess
@@ -136,8 +135,9 @@ class GoStormSync:
         self.TORRENTIO_4K_FOCUS = os.getenv("TORRENTIO_4K_FOCUS", "0") == "1"
         self.TORRENTIO_PROVIDERS = os.getenv("TORRENTIO_PROVIDERS", "")  # empty = all providers
 
-        # Prowlarr Adapter
-        self.prowlarr = ProwlarrClient()
+        # Prowlarr — calls gostream Go endpoint at /api/prowlarr/search
+        _metrics_port = _cfg.get('metrics_port', 8096)
+        self._gostream_url = f"http://127.0.0.1:{_metrics_port}"
         # Sizes
         self.BYTES_PER_GB = 1024 * 1024 * 1024
         self.MOVIE_4K_MIN_GB = int(os.getenv("MOVIE_4K_MIN_GB", "10"))  # ora configurabile via ENV
@@ -240,6 +240,25 @@ class GoStormSync:
         # Populate TV library cache from existing shows on startup
         if self.TV_PRESERVE_LIBRARY:
             self._populate_tv_library_cache_from_existing()
+
+    # === Prowlarr Go endpoint helper ===
+    def _fetch_prowlarr(self, imdb_id: str, content_type: str, title: str = "") -> list:
+        """Call the Go Prowlarr client via /api/prowlarr/search on gostream :8096."""
+        params = {'imdb_id': imdb_id, 'type': content_type}
+        if title:
+            params['title'] = title
+        try:
+            resp = self.session.get(
+                f'{self._gostream_url}/api/prowlarr/search',
+                params=params,
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            self.log("WARN", f'Prowlarr Go endpoint returned HTTP {resp.status_code}')
+        except requests.RequestException as e:
+            self.log("ERROR", f'Prowlarr Go request failed: {e}')
+        return []
 
     # === Logging utilities ===
     def setup_logging(self):
@@ -2468,9 +2487,9 @@ class GoStormSync:
         """
         import re
         
-        # 1. Try Prowlarr Adapter First
+        # 1. Try Prowlarr Adapter First (Go endpoint)
         try:
-            prowlarr_streams = self.prowlarr.fetch_torrents(imdb_id, content_type)
+            prowlarr_streams = self._fetch_prowlarr(imdb_id, content_type)
             if prowlarr_streams:
                 self.log("INFO", f"✅ Found {len(prowlarr_streams)} streams via Prowlarr for {imdb_id}")
                 # Use same filtering as Torrentio

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"gostream/internal/prowlarr"
 	"log"
 	"os"
 	"path/filepath"
@@ -129,11 +130,7 @@ type Config struct {
 	TorrentioURL string `json:"torrentio_url"` // Torrentio base URL (used when Prowlarr is disabled)
 
 	// --- Prowlarr Indexer ---
-	Prowlarr struct {
-		Enabled bool   `json:"enabled"`
-		APIKey  string `json:"api_key"`
-		URL     string `json:"url"`
-	} `json:"prowlarr"`
+	Prowlarr prowlarr.ConfigProwlarr `json:"prowlarr"`
 
 	// --- Built-in Sync Scheduler ---
 	Scheduler SchedulerConfig `json:"scheduler"`
