@@ -15,7 +15,11 @@ import (
 	torrstor "gostream/internal/gostorm/torr/storage/torrstor"
 	tsutils "gostream/internal/gostorm/utils"
 	"gostream/internal/gostorm/web"
+	"gostream/internal/monitor/collector"
+	"gostream/internal/monitor/dashboard"
 	"gostream/internal/prowlarr"
+	"gostream/internal/syncer/engines"
+	"gostream/internal/syncer/scheduler"
 	"io"
 	"log"
 	"net"
@@ -3045,7 +3049,119 @@ func main() {
 		}()
 	})
 
-	go http.ListenAndServe(":8096", nil)
+	// Sync Scheduler (Fase 1)
+	if globalConfig.Scheduler.Enabled {
+		schedCfg := scheduler.SchedulerConfig{
+			Enabled:       globalConfig.Scheduler.Enabled,
+			MoviesSync:    scheduler.DailyJobConfig(globalConfig.Scheduler.MoviesSync),
+			TVSync:        scheduler.DailyJobConfig(globalConfig.Scheduler.TVSync),
+			WatchlistSync: scheduler.WatchlistSyncConfig(globalConfig.Scheduler.WatchlistSync),
+		}
+
+		statePath := filepath.Join(GetStateDir(), "scheduler_state.json")
+
+		logsDir := filepath.Join(filepath.Dir(globalConfig.ConfigPath), "logs")
+
+		// Start midnight log truncation
+		engines.StartLogTruncator(logsDir, backgroundStopChan)
+
+		syncers := map[string]scheduler.Syncer{
+			"movies": engines.NewMoviesSyncer(engines.MoviesSyncerConfig{
+				GoStormURL:   globalConfig.GoStormBaseURL,
+				TMDBAPIKey:   globalConfig.TMDBAPIKey,
+				TorrentioURL: globalConfig.TorrentioURL,
+				PlexURL:      globalConfig.Plex.URL,
+				PlexToken:    globalConfig.Plex.Token,
+				PlexLib:      globalConfig.Plex.LibraryID,
+				MoviesDir:    filepath.Join(globalConfig.PhysicalSourcePath, "movies"),
+				StateDir:     GetStateDir(),
+				LogsDir:      logsDir,
+				ProwlarrCfg:  globalConfig.Prowlarr,
+			}),
+			"tv": engines.NewTVSyncer(engines.TVSyncerConfig{
+				GoStormURL:   globalConfig.GoStormBaseURL,
+				TMDBAPIKey:   globalConfig.TMDBAPIKey,
+				TorrentioURL: globalConfig.TorrentioURL,
+				PlexURL:      globalConfig.Plex.URL,
+				PlexToken:    globalConfig.Plex.Token,
+				PlexTVLib:    globalConfig.Plex.TVLibraryID,
+				TVDir:        filepath.Join(globalConfig.PhysicalSourcePath, "tv"),
+				StateDir:     GetStateDir(),
+				LogsDir:      logsDir,
+				ProwlarrCfg:  globalConfig.Prowlarr,
+			}),
+			"watchlist": engines.NewWatchlistSyncer(engines.WatchlistSyncerConfig{
+				GoStormURL:      globalConfig.GoStormBaseURL,
+				TMDBAPIKey:      globalConfig.TMDBAPIKey,
+				TorrentioURL:    globalConfig.TorrentioURL,
+				PlexURL:         globalConfig.Plex.URL,
+				PlexToken:       globalConfig.Plex.Token,
+				PlexSection:     globalConfig.Plex.LibraryID,
+				MoviesDir:       filepath.Join(globalConfig.PhysicalSourcePath, "movies"),
+				MediaServerType: globalConfig.MediaServerType,
+				LogsDir:         logsDir,
+				ProwlarrCfg:     globalConfig.Prowlarr,
+			}),
+		}
+
+		sched := scheduler.New(schedCfg, syncers, statePath)
+
+		http.HandleFunc("/api/scheduler/status", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(sched.Status())
+		})
+		http.HandleFunc("/api/scheduler/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "POST only", 405)
+				return
+			}
+			path := strings.TrimPrefix(r.URL.Path, "/api/scheduler/")
+			if strings.HasSuffix(path, "/stop") {
+				name := strings.TrimSuffix(path, "/stop")
+				if err := sched.StopJob(name); err != nil {
+					http.Error(w, err.Error(), 409)
+					return
+				}
+				w.WriteHeader(http.StatusAccepted)
+				return
+			}
+			name := strings.TrimSuffix(path, "/run")
+			if err := sched.TriggerRun(name); err != nil {
+				http.Error(w, err.Error(), 409)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+		})
+
+		safeGo(func() {
+			sched.Run(backgroundStopChan)
+		})
+		logger.Printf("[Scheduler] enabled (Go native)")
+	}
+
+	// Health Monitor + Dashboard (Fase 5)
+	monCollector := collector.New(
+		"http://127.0.0.1:8090",
+		"/mnt/torrserver-go",
+		"wg0",
+		globalConfig.Plex.URL,
+		globalConfig.Plex.Token,
+		globalConfig.NatPMP.LocalPort,
+		globalConfig.MetricsPort,
+	)
+	logsDir := filepath.Join(filepath.Dir(globalConfig.ConfigPath), "logs")
+	dashHandler := dashboard.New(monCollector, logsDir)
+	http.HandleFunc("/dashboard", dashHandler.Dashboard)
+	http.HandleFunc("/api/health", dashHandler.Health)
+	http.HandleFunc("/api/torrents", dashHandler.Torrents)
+	http.HandleFunc("/api/speed-history", dashHandler.SpeedHistory)
+	http.HandleFunc("/api/logs", dashHandler.Logs)
+	safeGo(func() {
+		monCollector.Run(backgroundStopChan)
+	})
+	logger.Printf("[Dashboard] enabled at :%d/dashboard", globalConfig.MetricsPort)
+
+	go http.ListenAndServe(fmt.Sprintf(":%d", globalConfig.MetricsPort), nil)
 
 	// Graceful shutdown: saves inode map and sync caches before exit.
 	sigChan := make(chan os.Signal, 1)

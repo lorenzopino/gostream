@@ -1414,8 +1414,7 @@
         // =============================================================
 
         const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const MONITOR_PORT = 8095;
-        const monitorBase = `http://${window.location.hostname}:${MONITOR_PORT}`;
+        const monitorBase = window.location.origin;
 
         function _toggleSchedBody(enabled) {
             document.getElementById('sched-body').classList.toggle('disabled', !enabled);
@@ -1500,7 +1499,7 @@
         async function loadScheduler() {
             const [cfgRes, rtRes] = await Promise.all([
                 fetch('/api/config'),
-                fetch(`${monitorBase}/api/scheduler`).catch(() => null)
+                fetch(`${monitorBase}/api/scheduler/status`).catch(() => null)
             ]);
             const cfg = await cfgRes.json();
             const sched = cfg.scheduler || {};
@@ -1522,9 +1521,9 @@
 
             _updateDayConflicts();
 
-            _renderMeta('sched-movies-meta', rt.movies_sync);
-            _renderMeta('sched-tv-meta', rt.tv_sync);
-            _renderMeta('sched-wl-meta', rt.watchlist_sync);
+            _renderMeta('sched-movies-meta', rt.movies);
+            _renderMeta('sched-tv-meta', rt.tv);
+            _renderMeta('sched-wl-meta', rt.watchlist);
         }
 
         async function saveScheduler() {
@@ -1578,7 +1577,7 @@
 
         async function runSyncNow(type) {
             try {
-                const res = await fetch(`${monitorBase}/api/${type}/start`, { method: 'POST' });
+                const res = await fetch(`${monitorBase}/api/scheduler/${type}/run`, { method: 'POST' });
                 if (res.ok) setTimeout(loadScheduler, 1000);
             } catch (e) { console.error('runSyncNow error', e); }
         }

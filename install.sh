@@ -137,7 +137,6 @@ install_system_deps() {
     local -A needed=()
 
     command -v git         >/dev/null 2>&1 || needed["git"]="git"
-    command -v pip3        >/dev/null 2>&1 || needed["pip3"]="python3-pip"
     command -v fusermount3 >/dev/null 2>&1 || needed["fusermount3"]="fuse3"
     command -v curl        >/dev/null 2>&1 || needed["curl"]="curl"
     command -v samba       >/dev/null 2>&1 || needed["samba"]="samba"
@@ -179,32 +178,6 @@ check_prerequisites() {
     print_header "Checking Prerequisites"
 
     local all_ok=true
-
-    # python3 >= 3.9
-    if command -v python3 >/dev/null 2>&1; then
-        local py_ver
-        py_ver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-        local py_major py_minor
-        py_major=$(echo "$py_ver" | cut -d. -f1)
-        py_minor=$(echo "$py_ver" | cut -d. -f2)
-        if [ "$py_major" -gt 3 ] || { [ "$py_major" -eq 3 ] && [ "$py_minor" -ge 9 ]; }; then
-            print_ok "python3 ($py_ver)"
-        else
-            print_err "python3 found but version $py_ver < 3.9 (required)"
-            all_ok=false
-        fi
-    else
-        print_err "python3 not found (required)"
-        all_ok=false
-    fi
-
-    # pip3
-    if command -v pip3 >/dev/null 2>&1; then
-        print_ok "pip3"
-    else
-        print_err "pip3 not found (required for Python dependencies)"
-        all_ok=false
-    fi
 
     # fusermount3 or fusermount (FUSE userspace tool)
     if command -v fusermount3 >/dev/null 2>&1; then
@@ -287,29 +260,17 @@ collect_plex() {
         local sections_xml
         if sections_xml=$(curl -sf --max-time 8 \
                 "${PLEX_URL}/library/sections?X-Plex-Token=${PLEX_TOKEN}" 2>/dev/null); then
-            # Parse XML with python3: extract (key, title, type) via env var to avoid stdin conflict
+            # Parse XML with grep/sed: extract (key, title, type)
             local parsed
-            parsed=$(PLEX_SECTIONS_XML="$sections_xml" python3 <<'PYEOF'
-import os, xml.etree.ElementTree as ET, sys
-
-xml_text = os.environ.get('PLEX_SECTIONS_XML', '')
-try:
-    root = ET.fromstring(xml_text)
-except ET.ParseError as e:
-    print(f"XML_PARSE_ERROR:{e}", file=sys.stderr)
-    sys.exit(1)
-
-sections = []
-for directory in root.findall('Directory'):
-    lib_type = directory.get('type', '')
-    if lib_type in ('movie', 'show'):
-        key = directory.get('key', '')
-        title = directory.get('title', '(unknown)')
-        sections.append(f"{key}:{title}:{lib_type}")
-
-print('\n'.join(sections))
-PYEOF
-) || true
+            parsed=$(echo "$sections_xml" | grep -oP '<Directory[^>]+key="([^"]+)"[^>]+type="([^"]+)"[^>]+title="([^"]+)"' | while IFS= read -r line; do
+                local key lib_type title
+                key=$(echo "$line" | grep -oP 'key="\K[^"]+')
+                lib_type=$(echo "$line" | grep -oP 'type="\K[^"]+')
+                title=$(echo "$line" | grep -oP 'title="\K[^"]+')
+                if [ "$lib_type" = "movie" ] || [ "$lib_type" = "show" ]; then
+                    echo "${key}:${title}:${lib_type}"
+                fi
+            done) || true
 
             if [ -n "$parsed" ]; then
                 echo ""
@@ -392,8 +353,7 @@ collect_hardware() {
     ask "GOMEMLIMIT (MiB)  — 2200 is optimal for Pi 4 / 4GB" "2200" GOMEMLIMIT_MB
 
     ask "Proxy listen port        (proxy_listen_port)" "8080" PROXY_PORT
-    ask "Metrics/dashboard port   (metrics_port)"      "8096" METRICS_PORT
-    ask "Health monitor port      (health-monitor.py)" "8095" DASHBOARD_PORT
+    ask "Metrics/dashboard port   (metrics_port)"      "9080" METRICS_PORT
 
     # NAT-PMP
     echo ""
@@ -473,7 +433,7 @@ generate_config_json() {
   "max_cache_entries": 10000,
   "gostorm_url": "http://127.0.0.1:8090",
   "proxy_listen_port": 8080,
-  "metrics_port": 8096,
+  "metrics_port": 9080,
   "blocklist_url": "https://github.com/Naunter/BT_BlockLists/raw/master/bt_blocklists.gz",
   "physical_source_path": "/mnt/gostream-mkv-real",
   "fuse_mount_path": "/mnt/gostream-mkv-virtual",
@@ -494,6 +454,7 @@ generate_config_json() {
     "tv_library_id": 0
   },
   "tmdb_api_key": "",
+  "media_server_type": "plex",
   "prowlarr": {
     "enabled": false,
     "api_key": "",
@@ -520,6 +481,9 @@ cfg['fuse_mount_path']       = "${FUSE_MOUNT}"
 # --- Network ---
 cfg['proxy_listen_port'] = int("${PROXY_PORT}")
 cfg['metrics_port']      = int("${METRICS_PORT}")
+
+# --- Media Server ---
+cfg['media_server_type'] = "plex"
 
 # --- External APIs ---
 if "${TMDB_API_KEY}":
@@ -551,6 +515,31 @@ cfg['natpmp']['enabled']       = natpmp_enabled_str.lower() == 'true'
 cfg['natpmp']['gateway']       = "${NATPMP_GATEWAY}"
 cfg['natpmp']['vpn_interface'] = "${VPN_INTERFACE}"
 
+# --- Sync Scheduler ---
+if 'scheduler' not in cfg or not isinstance(cfg.get('scheduler'), dict):
+    cfg['scheduler'] = {
+        "enabled": True,
+        "movies_sync": {"enabled": True, "days_of_week": [1, 4], "hour": 3, "minute": 0},
+        "tv_sync": {"enabled": True, "days_of_week": [3, 5], "hour": 4, "minute": 0},
+        "watchlist_sync": {"enabled": True, "interval_hours": 1}
+    }
+
+# --- Quality Scoring ---
+if 'quality_scoring' not in cfg or not isinstance(cfg.get('quality_scoring'), dict):
+    cfg['quality_scoring'] = {
+        "movies": {
+            "res_4k": 200, "res_1080p": 50, "hdr": 60, "dolby_vision": 150,
+            "hdr10_plus": 100, "atmos": 50, "audio_5_1": 25, "stereo": -50,
+            "bluray": 10, "seeder_bonus": 5, "seeder_threshold": 50
+        },
+        "tv": {
+            "res_4k": 200, "res_1080p": 50, "hdr": 60, "dolby_vision": 150,
+            "hdr10_plus": 100, "atmos": 50, "audio_5_1": 25, "stereo": -50,
+            "bluray": 10, "seeder_bonus": 5, "seeder_threshold": 50,
+            "fullpack_bonus": 300
+        }
+    }
+
 with open(output_path, 'w') as fh:
     json.dump(cfg, fh, indent=2)
     fh.write('\n')
@@ -567,58 +556,15 @@ PYEOF
 deploy_files() {
     print_info "Deploying files to ${INSTALL_DIR}..."
 
-    mkdir -p "${INSTALL_DIR}/scripts"
-
-    # Copy scripts
-    if [ -d "${SCRIPT_DIR}/scripts" ]; then
-        cp -r "${SCRIPT_DIR}/scripts/." "${INSTALL_DIR}/scripts/"
-        print_ok "Scripts deployed to ${INSTALL_DIR}/scripts/"
-    else
-        print_warn "scripts/ directory not found in ${SCRIPT_DIR} — skipping."
-    fi
-
     # Copy config.json.example (useful reference for the user)
     if [ -f "${SCRIPT_DIR}/config.json.example" ]; then
         cp "${SCRIPT_DIR}/config.json.example" "${INSTALL_DIR}/config.json.example"
         print_ok "config.json.example deployed to ${INSTALL_DIR}/"
     fi
-
-    # Copy requirements.txt
-    if [ -f "${SCRIPT_DIR}/requirements.txt" ]; then
-        cp "${SCRIPT_DIR}/requirements.txt" "${INSTALL_DIR}/requirements.txt"
-        print_ok "requirements.txt deployed to ${INSTALL_DIR}/"
-    fi
 }
 
 # ------------------------------------------------------------------------------
-# 5b. Install Python dependencies
-# ------------------------------------------------------------------------------
-install_python_deps() {
-    local req_file="${INSTALL_DIR}/requirements.txt"
-
-    print_info "Installing Python dependencies..."
-
-    # --break-system-packages is required on Debian 12+ / Raspberry Pi OS Bookworm
-    # This is intentional: the Pi is a single-purpose server, not a shared system.
-    local pip_flags="--quiet --break-system-packages --no-warn-script-location"
-
-    if [ -f "$req_file" ]; then
-        pip3 install -r "$req_file" $pip_flags
-        print_ok "Python dependencies installed from requirements.txt"
-    else
-        # Install the known runtime dependencies directly
-        print_warn "requirements.txt not found — installing known dependencies."
-        pip3 install $pip_flags \
-            requests \
-            psutil \
-            "fastapi>=0.100.0" \
-            "uvicorn[standard]"
-        print_ok "Core Python packages installed (requests, psutil, fastapi, uvicorn)"
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# 5c. Create directories
+# 5b. Create directories
 # ------------------------------------------------------------------------------
 create_directories() {
     print_info "Creating required directories..."
@@ -722,32 +668,6 @@ WantedBy=multi-user.target
 SERVICE_EOF
 
     print_ok "Wrote /etc/systemd/system/gostream.service"
-
-    # -- health-monitor.service --
-    sudo tee /etc/systemd/system/health-monitor.service > /dev/null <<HEALTHSVC_EOF
-[Unit]
-Description=GoStorm Health Monitor Dashboard
-After=network.target gostream.service
-
-[Service]
-Type=simple
-User=${SYSTEM_USER}
-WorkingDirectory=${INSTALL_DIR}
-ExecStart=/usr/bin/python3 scripts/health-monitor.py
-Restart=always
-RestartSec=5
-TimeoutStopSec=5
-Environment=PYTHONUNBUFFERED=1
-
-# Centralized logging for dashboard
-StandardOutput=append:logs/health-monitor.log
-StandardError=append:logs/health-monitor.log
-
-[Install]
-WantedBy=multi-user.target
-HEALTHSVC_EOF
-
-    print_ok "Wrote /etc/systemd/system/health-monitor.service"
 }
 
 # ------------------------------------------------------------------------------
@@ -757,32 +677,13 @@ enable_services() {
     print_info "Reloading systemd and enabling services..."
 
     sudo systemctl daemon-reload
-    sudo systemctl enable gostream health-monitor
+    sudo systemctl enable gostream
 
-    print_ok "Services enabled: gostream, health-monitor"
+    print_ok "Services enabled: gostream"
 }
 
 # ------------------------------------------------------------------------------
-# 5f. Verify installation (non-fatal — binary may not be deployed yet)
-# ------------------------------------------------------------------------------
-verify_install() {
-    print_info "Verifying installation (checking metrics endpoint)..."
-
-    local url="http://127.0.0.1:${METRICS_PORT}/metrics"
-    if command -v curl >/dev/null 2>&1; then
-        if curl -sf --max-time 5 "$url" >/dev/null 2>&1; then
-            print_ok "GoStream metrics endpoint is reachable at ${url}"
-        else
-            print_warn "GoStream is not running yet (metrics endpoint not reachable)."
-            print_warn "This is expected if the binary has not been copied and started."
-        fi
-    else
-        print_warn "curl not available — skipping endpoint verification."
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# 5f2. Install Go toolchain if missing or wrong architecture
+# 5g. Sudoers entry so gostream.service can restart smbd without a password
 # ------------------------------------------------------------------------------
 GO_BIN=""
 GO_ARCH=""
@@ -927,9 +828,28 @@ compile_binary() {
 }
 
 # ------------------------------------------------------------------------------
-# 5g. Sudoers entry so gostream.service can restart smbd without a password
+# 5h. Verify installation (non-fatal — binary may not be deployed yet)
 # ------------------------------------------------------------------------------
-setup_sudoers() {
+verify_install() {
+    print_info "Verifying installation (checking metrics endpoint)..."
+
+    local url="http://127.0.0.1:${METRICS_PORT}/metrics"
+    if command -v curl >/dev/null 2>&1; then
+        if curl -sf --max-time 5 "$url" >/dev/null 2>&1; then
+            print_ok "GoStream metrics endpoint is reachable at ${url}"
+        else
+            print_warn "GoStream is not running yet (metrics endpoint not reachable)."
+            print_warn "This is expected if the binary has not been copied and started."
+        fi
+    else
+        print_warn "curl not available — skipping endpoint verification."
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# 5i. Cron jobs for sync scripts (optional — built-in scheduler is preferred)
+# ------------------------------------------------------------------------------
+setup_cron_jobs() {
     print_info "Configuring sudoers for smbd restart..."
 
     local sudoers_file="/etc/sudoers.d/gostream-smbd"
@@ -952,71 +872,10 @@ setup_sudoers() {
 }
 
 # ------------------------------------------------------------------------------
-# 5h. Cron jobs for sync scripts (optional)
+# 5i. Cron jobs removed — use built-in scheduler from Control Panel
 # ------------------------------------------------------------------------------
 setup_cron_jobs() {
-    print_info "Setting up cron jobs for sync scripts..."
-
-    if ! ask_yn "Set up system cron jobs for sync scripts? (Skip if you plan to use the built-in Scheduler from the control panel)" "n"; then
-        print_info "Skipping cron job setup."
-        return 0
-    fi
-
-    local logs_dir="${BASE_DIR}/logs"
-
-    # Each entry: "schedule script logfile"
-    local -a cron_entries=(
-        "0 * * * * /usr/bin/python3 ${INSTALL_DIR}/scripts/plex-watchlist-sync.py >> ${logs_dir}/watchlist-sync.log 2>&1"
-        "0 3 * * * /usr/bin/python3 ${INSTALL_DIR}/scripts/gostorm-sync-complete.py >> ${logs_dir}/gostorm-debug.log 2>&1"
-        "0 4 * * 0 /usr/bin/python3 ${INSTALL_DIR}/scripts/gostorm-tv-sync.py >> ${logs_dir}/gostorm-tv-sync.log 2>&1"
-    )
-
-    # Script name substrings used for deduplication checks
-    local -a cron_markers=(
-        "plex-watchlist-sync.py"
-        "gostorm-sync-complete.py"
-        "gostorm-tv-sync.py"
-    )
-
-    # Decide whether to edit root's crontab (via sudo -u SYSTEM_USER) or current user
-    local crontab_cmd
-    if [ "$(id -u)" -eq 0 ]; then
-        crontab_cmd="crontab -u ${SYSTEM_USER}"
-    else
-        crontab_cmd="crontab"
-    fi
-
-    # Load existing crontab (gracefully handle empty/missing crontab)
-    local existing_crontab
-    existing_crontab=$(${crontab_cmd} -l 2>/dev/null || true)
-
-    local new_crontab="$existing_crontab"
-    local added=0
-
-    for i in "${!cron_entries[@]}"; do
-        local entry="${cron_entries[$i]}"
-        local marker="${cron_markers[$i]}"
-
-        if echo "$existing_crontab" | grep -qF "$marker"; then
-            print_warn "Cron entry for ${marker} already exists — skipping."
-        else
-            # Append a newline before the new entry if crontab is not empty
-            if [ -n "$new_crontab" ]; then
-                new_crontab="${new_crontab}"$'\n'"${entry}"
-            else
-                new_crontab="${entry}"
-            fi
-            print_ok "Cron added: ${entry}"
-            (( added++ )) || true
-        fi
-    done
-
-    if [ "$added" -gt 0 ]; then
-        echo "$new_crontab" | ${crontab_cmd} -
-        print_ok "${added} cron job(s) installed."
-    else
-        print_info "No new cron entries were needed."
-    fi
+    print_info "Built-in scheduler is enabled by default. Configure it from the Control Panel at :9080/control."
 }
 
 # ==============================================================================
@@ -1033,16 +892,15 @@ show_summary() {
     echo ""
     echo "  Service files installed:"
     echo "    /etc/systemd/system/gostream.service"
-    echo "    /etc/systemd/system/health-monitor.service"
     echo ""
     echo "${BOLD}Next steps:${NC}"
     echo ""
-    echo "  1. Start services:"
-    echo "     ${YELLOW}sudo systemctl start gostream health-monitor${NC}"
+    echo "  1. Start the service:"
+    echo "     ${YELLOW}sudo systemctl start gostream${NC}"
     echo ""
     echo "  2. Configure Plex Webhook:"
     echo "     Open Plex → Settings → Webhooks → Add:"
-    echo "     ${BOLD}http://<your-pi-ip>:${METRICS_PORT}/plex-webhook${NC}"
+    echo "     ${BOLD}http://<your-pi-ip>:${METRICS_PORT}/plex/webhook${NC}"
     echo ""
     echo "  3. Configure Samba (critical for stability):"
     echo "     Edit /etc/samba/smb.conf and ensure your share has:"
@@ -1057,16 +915,18 @@ show_summary() {
     echo "     ${YELLOW}curl http://127.0.0.1:${METRICS_PORT}/metrics${NC}"
     echo ""
     echo "  5. Dashboards:"
-    echo "     ${BOLD}http://<your-ip>:${DASHBOARD_PORT}${NC}  (Health Monitor)"
-    echo "     ${BOLD}http://<your-ip>:${METRICS_PORT}/control${NC}  (GoStream Control Panel)"
+    echo "     ${BOLD}http://<your-ip>:${METRICS_PORT}/control${NC}  (Control Panel + Scheduler)"
+    echo "     ${BOLD}http://<your-ip>:${METRICS_PORT}/dashboard${NC}  (Health Monitor)"
     echo ""
-    echo "  6. Sync scripts (run manually or via cron):"
-    echo "     ${YELLOW}python3 ${INSTALL_DIR}/scripts/gostorm-sync-complete.py${NC}  # Movies"
-    echo "     ${YELLOW}python3 ${INSTALL_DIR}/scripts/gostorm-tv-sync.py${NC}         # TV"
-    echo "     ${YELLOW}python3 ${INSTALL_DIR}/scripts/plex-watchlist-sync.py${NC}     # Watchlist"
+    echo "  6. Trigger sync manually:"
+    echo "     ${YELLOW}curl -X POST http://127.0.0.1:${METRICS_PORT}/api/scheduler/movies/run${NC}  # Movies"
+    echo "     ${YELLOW}curl -X POST http://127.0.0.1:${METRICS_PORT}/api/scheduler/tv/run${NC}         # TV"
+    echo "     ${YELLOW}curl -X POST http://127.0.0.1:${METRICS_PORT}/api/scheduler/watchlist/run${NC}  # Watchlist"
     echo ""
     echo "  7. Logs:"
     echo "     ${YELLOW}tail -f ${BASE_DIR}/logs/gostream.log${NC}"
+    echo "     ${YELLOW}tail -f ${BASE_DIR}/logs/movies-sync.log${NC}"
+    echo "     ${YELLOW}tail -f ${BASE_DIR}/logs/tv-sync.log${NC}"
     echo ""
 }
 
@@ -1096,8 +956,6 @@ main() {
     echo ""
     generate_config_json
     echo ""
-    install_python_deps
-    echo ""
     create_directories
     echo ""
     install_services
@@ -1106,11 +964,11 @@ main() {
     echo ""
     setup_sudoers
     echo ""
-    setup_cron_jobs
-    echo ""
     compile_binary
     echo ""
     verify_install
+    echo ""
+    setup_cron_jobs
 
     show_summary
 }

@@ -21,14 +21,14 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 
 - **Custom FUSE virtual filesystem**: every `.mkv` is a live torrent presented to the media server as a real file. No temp files, no persistent downloads — torrent data never touches the disk.
 - The embedded torrent engine is **GoStorm**, a fork of [TorrServer Matrix 1.37](https://github.com/YouROK/TorrServer) and [anacrolix/torrent v1.55](https://github.com/anacrolix/torrent), running in-process with the FUSE layer (no separate HTTP proxy). Both upstreams carry targeted streaming patches not present in the originals.
-- **Movie auto-discovery** pulls trending and popular titles from TMDB daily, finds the best torrent via Torrentio (4K DV preferred), and registers them automatically. Existing entries are **upgraded** when a better version becomes available (e.g. 1080p → 4K HDR).
-- **TV Series sync** runs weekly with a fullpack-first season pack strategy and a Plex-compatible directory structure.
+- **Built-in sync engine** discovers trending and popular titles from TMDB on a schedule, finds the best torrent via Prowlarr (with Torrentio fallback), and registers them automatically. All in pure Go — no Python, no external scripts. Existing entries are **upgraded** when a better version becomes available (e.g. 1080p → 4K HDR).
+- **TV Series sync** runs on schedule with a fullpack-first season pack strategy and a Plex-compatible directory structure.
 - Add a title to your **Plex cloud watchlist** and it shows up in your library within the hour.
 - **NAT-PMP** for WireGuard setups: GoStream requests an inbound port mapping from the VPN gateway and installs `iptables REDIRECT` rules, all without a restart.
 - A **peer blocklist** of ~700,000 IP ranges is downloaded on startup and refreshed every 24 hours, injected into the torrent engine before any connection is made.
 - **Plex & Jellyfin Webhook integration**: `media.play` triggers Priority Mode with aggressive piece prioritization. IMDB-ID is extracted from the raw payload via regex, so it works even when the media server sends localized titles. Jellyfin is supported natively via JSON body — no code change, no plugin hacks.
-- The **embedded Control Panel** at `:8096/control` lets you adjust all FUSE and engine settings live, compiled directly into the binary.
-- The **Health Monitor Dashboard** shows a real-time speed graph, an active stream panel with movie poster and quality badges, sync controls, and system stats.
+- The **embedded Control Panel** at `:9080/control` lets you adjust all FUSE and engine settings live, compiled directly into the binary.
+- The **Health Monitor Dashboard** at `:9080/dashboard` shows a real-time speed graph, an active stream panel with movie poster and quality badges, sync controls, and system stats — all embedded in the Go binary.
 - Everything ships as a **single binary**: GoStorm engine, GoStream, metrics, control panel, and webhook receiver in one `gostream` executable.
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/MrRobotoGit/gostream)
@@ -56,7 +56,7 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 - [Control Panel](#gostream-control-panel)
 - [Health Monitor](#health-monitor-dashboard)
 - [Configuration Reference](#configuration-reference)
-- [Sync Scripts](#sync-scripts)
+- [Sync Engine](#sync-engine-go-native)
 - [Prowlarr Integration](#prowlarr-integration-resilience)
 - [Plex/Jellyfin & Samba Setup](#plex-and-samba-setup)
 - [Build from Source](#build-from-source)
@@ -89,22 +89,22 @@ Because GoStream exposes standard `.mkv` files on a standard filesystem, any pla
 
 ### How your library gets populated automatically
 
-GoStream includes sync scripts that run on a schedule and keep your library up to date without any manual intervention.
+GoStream includes a built-in sync engine that runs on a schedule and keeps your library up to date without any manual intervention.
 
-Every day, a script queries **TMDB** (The Movie Database) for the latest releases, trending titles, and popular movies. For each title it finds, it searches **Torrentio** for the best available torrent (preferring 4K Dolby Vision, falling back to 1080p). If a good torrent is found, it registers it in GoStream and creates the corresponding virtual `.mkv` file in the library.
+Every day, the engine queries **TMDB** (The Movie Database) for the latest releases, trending titles, and popular movies. For each title it finds, it searches **Prowlarr** (with Torrentio fallback) for the best available torrent (preferring 4K Dolby Vision, falling back to 1080p). If a good torrent is found, it registers it in GoStorm and creates the corresponding virtual `.mkv` file in the library.
 
 The next time the media server scans, it finds a new file, downloads the poster and description, and the film appears in your library ready to play.
 
-If a better version of a film becomes available later (for example a 4K HDR release of a title you already have in 1080p), the script replaces it automatically.
+If a better version of a film becomes available later (for example a 4K HDR release of a title you already have in 1080p), the engine replaces it automatically.
 
-TV series work the same way: a weekly script finds new seasons and episodes, organises them in the Plex/Jellyfin-compatible folder structure (`Show Name/Season 01/`), and they appear in your library within the week.
+TV series work the same way: the sync engine finds new seasons and episodes, organises them in the Plex/Jellyfin-compatible folder structure (`Show Name (Year)/Season.01/`), and they appear in your library within the week.
 
 You can also add a title to your **Plex Watchlist** from any device and it will appear in your library within the hour.
 ### Prowlarr Integration (Resilience)
 
 To ensure the system remains functional even when public aggregators like Torrentio are down, GoStream includes a **Prowlarr Adapter**. This allows you to use your own self-hosted Prowlarr instance as the primary source for torrents.
 
-The sync scripts implement a **Strict Fallback** logic: they first query your Prowlarr indexers using IMDB IDs for maximum precision. If no results are found locally, they automatically fall back to Torrentio.
+The sync engine implements a **Strict Fallback** logic: it first queries your Prowlarr indexers using IMDB IDs for maximum precision. If no results are found locally, it automatically falls back to Torrentio.
 
 **Configuration** is done via `config.json` (or the Control Panel → **Prowlarr Indexer** section):
 
@@ -187,10 +187,8 @@ BitTorrent Peers ←→ GoStorm Engine (:8090)
 
 | Port | Purpose |
 |------|---------|
-| `:8080` | GoStream HTTP endpoint |
 | `:8090` | GoStorm API — JSON torrent management |
-| `:8096` | Metrics, Control Panel, Plex Webhook |
-| `:8095` | Health Monitor Dashboard (Python, separate process) |
+| `:9080` | Control Panel, Metrics, Dashboard, Webhook, Scheduler |
 
 ---
 
@@ -214,7 +212,7 @@ The default quota is 32 GB with LRU eviction by write time, enough for around 15
 
 ### 3. Webhook Integration & Smart Streaming
 
-GoStream embeds a webhook receiver at `:8096/plex/webhook` (also `/webhook`). Both **Plex** and **Jellyfin** are supported. When a `media.play` event arrives:
+GoStream embeds a webhook receiver at `:9080/plex/webhook` (also `/webhook`). Both **Plex** and **Jellyfin** are supported. When a `media.play` event arrives:
 
 1. **IMDB extraction** — Extracts the IMDB ID from the raw JSON payload using `imdb://(tt\d+)` regex *before* `json.Unmarshal`. This is intentional: Plex uses a non-standard `Guid` array format that causes a silent `UnmarshalTypeError` when decoded normally.
 2. **Priority Mode** — GoStorm is instructed to aggressively prioritize pieces covering the exact byte range being played.
@@ -225,14 +223,14 @@ GoStream embeds a webhook receiver at `:8096/plex/webhook` (also `/webhook`). Bo
 
 **Plex** — Settings → Webhooks → Add Webhook:
 ```
-http://<your-pi-ip>:8096/plex/webhook
+http://<your-pi-ip>:9080/plex/webhook
 ```
 
 **Jellyfin** — Install the [Webhook plugin](https://github.com/jellyfin/jellyfin-plugin-webhook), then add one webhook with events `PlaybackStart`, `PlaybackStop`, `PlaybackProgress`:
 
 | Field | Value |
 |-------|-------|
-| URL | `http://<your-pi-ip>:8096/plex/webhook` |
+| URL | `http://<your-pi-ip>:9080/plex/webhook` |
 | Header Key | `Content-Type` |
 | Header Value | `application/json` |
 
@@ -270,19 +268,20 @@ Accurate, low-latency seeking in large 4K files required five coordinated fixes:
 
 The 256 MB read-ahead budget is split across **32 independent shards**, each keyed by hash of file path and offset, each with its own LRU and mutex. Multiple Plex/Jellyfin sessions and scanner threads read concurrently without contending on a single lock. Both `Put()` and `Get()` use **defensive copies** to prevent use-after-free races from channel-pool reuse.
 
-### 7. Optional Automation Layer
+### 7. Native Sync Engine (Go)
 
-The engine is content-agnostic; torrents can be added manually via API. The included Python scripts are optional automation layered on top:
+All sync logic runs natively inside the Go binary — no Python, no external scripts, no subprocess overhead.
 
-| Script | Trigger | What it does |
+| Engine | Trigger | What it does |
 |--------|---------|-------------|
-| `gostorm-sync-complete.py` | Scheduler / manual | TMDB Discover + Popular → Torrentio → GoStorm → virtual `.mkv` |
-| `gostorm-tv-sync.py` | Scheduler / manual | TV series with fullpack-first approach |
-| `plex-watchlist-sync.py` | Scheduler / manual | Plex cloud watchlist → IMDB → Torrentio → GoStorm |
-| `health-monitor.py` | Persistent service | Real-time dashboard at `:8095`, runs the built-in scheduler |
+| **Movies** | Scheduler / manual | TMDB Discover + Popular → Prowlarr/Torrentio → GoStorm → virtual `.mkv` |
+| **TV Series** | Scheduler / manual | TV series with fullpack-first approach, episode registry |
+| **Watchlist** | Scheduler / manual | Plex cloud watchlist → IMDB → Prowlarr/Torrentio → GoStorm |
 
 **Quality ladder**: `4K DV > 4K HDR10+ > 4K HDR > 4K > 1080p REMUX > 1080p`\
 **Minimum seeders**: 20 (main sync), 10 (watchlist sync, for older films)
+
+All sync state (episode registry, negative caches, scheduler state) is persisted in `STATE/` as JSON. The built-in scheduler replaces system cron and is configurable from the Control Panel.
 
 ### 8. NAT-PMP Native VPN Port Forwarding
 
@@ -348,7 +347,6 @@ GoStorm is a fork of **[TorrServer Matrix 1.37](https://github.com/YouROK/TorrSe
 |-----------|---------|
 | **Hardware** | Raspberry Pi 4 with arm64 OS (4 GB RAM recommended) |
 | **Go** | 1.24+ — must be `linux/arm64` toolchain, **not** `linux/arm` (32-bit) |
-| **Python** | 3.9+ with pip3 |
 | **FUSE 3** | `sudo apt install fuse3 libfuse3-dev` |
 | **systemd** | For service management |
 | **Samba** | `sudo apt install samba` |
@@ -370,19 +368,17 @@ chmod +x install.sh
 ![GoStream interactive installer](docs/screenshots/install.png)
 
 The interactive installer handles everything end-to-end:
-1. Installs system dependencies (`fuse3`, `libfuse3-dev`, `gcc`, `samba`, `git`, `pip3`)
+1. Installs system dependencies (`fuse3`, `libfuse3-dev`, `gcc`, `samba`, `git`)
 2. Prompts for all required paths, Plex credentials, TMDB key, and NAT-PMP settings
 3. Generates `config.json` from `config.json.example`
-4. Installs Python dependencies from `requirements.txt`
-5. Creates `GoStream/STATE/`, `logs/`, and FUSE mount point directories
-6. **Compiles the GoStream binary** (downloads Go if needed, detects architecture automatically)
-7. Writes and enables systemd services for `gostream` and `health-monitor`
-8. Optionally configures system cron jobs (skip if using the built-in Scheduler)
+4. Creates `GoStream/STATE/`, `logs/`, and FUSE mount point directories
+5. **Compiles the GoStream binary** (downloads Go if needed, detects architecture automatically)
+6. Writes and enables the systemd service for `gostream`
 
 Once complete:
 
 ```bash
-sudo systemctl start gostream health-monitor
+sudo systemctl start gostream
 ```
 
 ---
@@ -390,7 +386,7 @@ sudo systemctl start gostream health-monitor
 ## How-To Guide
 
 > [!CAUTION]
-> **Attention:** After the first run of the Movie and TV library population scripts, hundreds of `.mkv` files will be created. Plex/Jellyfin will then begin scanning these files to populate its UI. During this initial scan, playback will be extremely slow or may time out. This is because the media server opens and closes files hundreds of times during analysis, which congests the BitTorrent engine. Please wait for Plex/Jellyfin to complete its scan before starting any streams. Enjoy!
+> **Attention:** After the first run of the Movie and TV sync engine, hundreds of `.mkv` files will be created. Plex/Jellyfin will then begin scanning these files to populate its UI. During this initial scan, playback will be extremely slow or may time out. This is because the media server opens and closes files hundreds of times during analysis, which congests the BitTorrent engine. Please wait for Plex/Jellyfin to complete its scan before starting any streams. Enjoy!
 
 
 <details>
@@ -400,11 +396,11 @@ Required for Priority Mode (bitrate boost during playback), fast-drop on stop, a
 
 **Plex** — Settings → Webhooks → Add Webhook:
 ```
-http://192.168.1.2:8096/plex/webhook
+http://192.168.1.2:9080/plex/webhook
 ```
 
 **Jellyfin** — Install the Webhook plugin, add one webhook (events: `PlaybackStart`, `PlaybackStop`, `PlaybackProgress`):
-- URL: `http://192.168.1.2:8096/plex/webhook`
+- URL: `http://192.168.1.2:9080/plex/webhook`
 - Header: Key `Content-Type` / Value `application/json`
 - Template:
 ```
@@ -413,7 +409,7 @@ http://192.168.1.2:8096/plex/webhook
 
 Test connectivity:
 ```bash
-curl -X POST http://192.168.1.2:8096/plex/webhook \
+curl -X POST http://192.168.1.2:9080/plex/webhook \
   -H 'Content-Type: application/json' \
   -d '{"event":"media.play"}'
 ```
@@ -443,11 +439,12 @@ curl -X POST http://127.0.0.1:8090/torrents \
   -d '{"action":"add","link":"magnet:?xt=urn:btih:...","title":"Interstellar (2014)"}'
 ```
 
-**Via sync scripts (recommended):**
+**Via sync engine (recommended):**
+Trigger from the Control Panel (`:9080/control`) → Sync Scheduler → Movies → "Run now", or via API:
 ```bash
-python3 /home/pi/GoStream/scripts/gostorm-sync-complete.py
+curl -X POST http://127.0.0.1:9080/api/scheduler/movies/run
 ```
-The script fetches popular films from TMDB, finds the best available torrent for each via Torrentio, adds them to GoStorm, and writes virtual `.mkv` stub files.
+The engine fetches popular films from TMDB, finds the best available torrent for each via Prowlarr/Torrentio, adds them to GoStorm, and writes virtual `.mkv` stub files.
 
 </details>
 
@@ -484,22 +481,18 @@ The pump goroutine survives `ErrInterrupted` — it sleeps 200 ms and continues 
 <details>
 <summary><b>Step 6 — Add from Your Plex Watchlist</b></summary>
 
-Add any movie to your Plex cloud watchlist (desktop or mobile app). Within the interval configured in the Scheduler (default: 1 hour):
+Add any movie to your Plex cloud watchlist (desktop or mobile app). Within the interval configured in the Scheduler (default: 1 hour), the Go sync engine will resolve it to an IMDB ID, find the best torrent, and add it automatically.
 
+Trigger manually from the Control Panel (`:9080/control`) → Sync Scheduler → Watchlist → "Run now", or via API:
 ```bash
-python3 /home/pi/GoStream/scripts/plex-watchlist-sync.py
+curl -X POST http://127.0.0.1:9080/api/scheduler/watchlist/run
 ```
 
-The script:
+The engine:
 1. Queries `discover.provider.plex.tv` for your watchlist
 2. Resolves each entry to an IMDB ID (falls back to TMDB)
-3. Queries Torrentio for the best stream (minimum 10 seeders)
+3. Queries Prowlarr/Torrentio for the best stream (minimum 10 seeders)
 4. Adds to GoStorm and writes a virtual `.mkv` stub
-
-Test without making changes:
-```bash
-python3 /home/pi/GoStream/scripts/plex-watchlist-sync.py --dry-run --verbose
-```
 
 </details>
 
@@ -507,17 +500,20 @@ python3 /home/pi/GoStream/scripts/plex-watchlist-sync.py --dry-run --verbose
 <summary><b>Step 7 — Monitor in Real Time</b></summary>
 
 ```bash
-# Control Panel GoStream + GoStorm settings, paths, restart button
-open http://192.168.1.2:8096/control
+# Control Panel — GoStream + GoStorm settings, paths, scheduler, restart button
+open http://192.168.1.2:9080/control
 
-# Health Dashboard speed graph, torrent stats, active stream, log viewer
-open http://192.168.1.2:8095
+# Health Dashboard — speed graph, torrent stats, active stream, system stats
+open http://192.168.1.2:9080/dashboard
 
 # Raw metrics (JSON)
-curl -s http://192.168.1.2:8096/metrics | python3 -m json.tool
+curl -s http://192.168.1.2:9080/metrics | python3 -m json.tool
+
+# Scheduler status
+curl -s http://192.168.1.2:9080/api/scheduler/status | jq
 
 # Live log key events only
-ssh pi@192.168.1.2 "tail -f /home/pi/logs/gostream.log | grep -E '(OPEN|NATIVE|Interrupt|Jump|DiskWarmup|Emergency)'"
+ssh pi@192.168.1.2 "tail -f /home/pi/GoStream/logs/gostream.log | grep -E '(OPEN|NATIVE|Interrupt|Jump|DiskWarmup|Emergency)'"
 
 # Active torrents in RAM with speed
 curl -s -X POST -H 'Content-Type: application/json' \
@@ -530,26 +526,26 @@ curl -s -X POST -H 'Content-Type: application/json' \
 <details>
 <summary><b>Step 8 — Configure the MKV Creation Scheduler</b></summary>
 
-GoStream includes a built-in scheduler that replaces system cron. Configure it from the Control Panel at `:8096/control` → **Sync Scheduler** card.
+GoStream includes a built-in scheduler that replaces system cron. Configure it from the Control Panel at `:9080/control` → **Sync Scheduler** card.
 
 **Three jobs are available:**
 
 | Job | Default schedule | Log file |
 |-----|-----------------|----------|
-| Movies Library Sync | Mon + Thu at 03:00 | `logs/gostorm-debug.log` |
-| TV Series Library Sync | Wed + Fri at 04:00 | `logs/gostorm-tv-sync.log` |
+| Movies Library Sync | Mon + Thu at 03:00 | `logs/movies-sync.log` |
+| TV Series Libraries Sync | Wed + Fri at 04:00 | `logs/tv-sync.log` |
 | Plex Watchlist Sync | Every 1 hour | `logs/watchlist-sync.log` |
 
-Enable the scheduler with the **Enable Scheduler** toggle, pick weekdays and start time for each job, then click **Save schedule**. The `health-monitor` service picks up the new schedule within 1 minute — no restart needed.
+Enable the scheduler with the **Enable Scheduler** toggle, pick weekdays and start time for each job, then click **Save schedule**. Changes require a service restart to take effect.
 
-> **Advanced / fallback**: if you prefer system cron, `install.sh` offers an optional cron setup step. Disable the built-in scheduler to avoid double-firing.
+> **Run now**: trigger any job immediately from the Control Panel or via `POST /api/scheduler/{type}/run` on port 9080.
 
 </details>
 
 <details>
 <summary><b>Step 9 — Tune GoStorm Settings</b></summary>
 
-Via the Control Panel at `:8096/control`, or via API:
+Via the Control Panel at `:9080/control`, or via API:
 
 ```bash
 curl -X POST http://127.0.0.1:8090/settings \
@@ -586,11 +582,11 @@ Capture a CPU profile during real streaming workload:
 ```bash
 # Single profile (120 seconds while streaming a 4K film)
 curl -o /home/pi/gostream/default.pgo \
-  "http://127.0.0.1:8096/debug/pprof/profile?seconds=120"
+  "http://127.0.0.1:9080/debug/pprof/profile?seconds=120"
 
 # Or merge multiple workloads for better coverage
-curl -o /tmp/pgo-stream.pprof "http://127.0.0.1:8096/debug/pprof/profile?seconds=120"
-curl -o /tmp/pgo-sync.pprof   "http://127.0.0.1:8096/debug/pprof/profile?seconds=120"
+curl -o /tmp/pgo-stream.pprof "http://127.0.0.1:9080/debug/pprof/profile?seconds=120"
+curl -o /tmp/pgo-sync.pprof   "http://127.0.0.1:9080/debug/pprof/profile?seconds=120"
 go tool pprof -proto /tmp/pgo-stream.pprof /tmp/pgo-sync.pprof > /home/pi/gostream/default.pgo
 
 # Rebuild Go detects the changed profile and re-optimizes automatically
@@ -606,10 +602,10 @@ Regenerate after significant code changes. On Pi 4 Cortex-A72, `sha1.blockGeneri
 
 ## GoStream Control Panel
 
-The Control Panel is a web UI **embedded in the GoStream binary** — no additional server, no React build step, no external dependencies. Served at `:8096/control`.
+The Control Panel is a web UI **embedded in the GoStream binary** — no additional server, no React build step, no external dependencies. Served at `:9080/control`.
 
 ```
-http://<your-pi-ip>:8096/control
+http://<your-pi-ip>:9080/control
 ```
 
 ### Simple / Advanced Mode
@@ -650,10 +646,10 @@ Settings are pushed **live via API** — no restart needed. **Apply All Core Set
 
 <p align="center"><img src="docs/screenshots/health_monitor_1.png" alt="Health Monitor — Status grid and sync controls" width="500"></p>
 
-Standalone Python service (`health-monitor.py`) at port **`:8095`**. Real-time operational view of the entire stack.
+Embedded Go service at port **`:9080`**. Real-time operational view of the entire stack.
 
 ```
-http://<your-pi-ip>:8095
+http://<your-pi-ip>:9080/dashboard
 ```
 
 ### Status Grid
@@ -667,11 +663,11 @@ Six cards in a 2×3 grid:
 | **VPN (WG0)** | WireGuard interface status: VPN IP and gateway. |
 | **NAT-PMP** | Active external port assigned by VPN gateway. |
 | **PLEX** | Server version and reachability. |
-| **SYSTEM** | CPU %, RAM %, free disk space — live via `psutil`. |
+| **SYSTEM** | CPU %, RAM %, free disk space — live via gopsutil. |
 
 ### Download Speed Graph
 
-**15-minute rolling chart** of GoStorm download speed in Mbps. Samples every few seconds with auto-scroll.
+**15-minute rolling chart** of GoStorm download speed in Mbps. Samples every 5 seconds with auto-scroll.
 
 ### Active Stream Panel
 
@@ -684,17 +680,17 @@ Appears automatically during playback:
 ### Sync Controls
 
 Two panels for manual sync execution without SSH:
-- **MOVIES SYNC** — Triggers `gostorm-sync-complete.py` with live SSE log streaming
-- **TV SYNC** — Triggers `gostorm-tv-sync.py` with Start/Idle status
+- **MOVIES SYNC** — Triggers the Go movie sync engine with live log streaming
+- **TV SYNC** — Triggers the Go TV sync engine with Start/Idle status
 
 ### MKV Creation Scheduler
 
-Replaces system cron. Configured from the **Sync Scheduler** card in the Control Panel:
-- **Movies Library Sync** — select weekdays + start time; fires `gostorm-sync-complete.py`
-- **TV Series Library Sync** — select weekdays + start time; fires `gostorm-tv-sync.py`
-- **Plex Watchlist Sync** — interval-based (1 h, 2 h … 24 h); fires `plex-watchlist-sync.py`
+Built into the Go binary. Configured from the **Sync Scheduler** card in the Control Panel:
+- **Movies Library Sync** — select weekdays + start time
+- **TV Series Libraries Sync** — select weekdays + start time
+- **Plex Watchlist Sync** — interval-based (1 h, 2 h … 24 h)
 
-The `health-monitor` service runs the scheduler loop (checks every 60 s). Last/next run times and live status are shown in the card. State persists across restarts in `STATE/scheduler_state.json`.
+Last/next run times and live status are shown in the card. State persists across restarts in `STATE/scheduler_state.json`.
 
 ---
 
@@ -719,7 +715,7 @@ nano /home/pi/GoStream/config.json
 | `master_concurrency_limit` | `25` | Max concurrent data slots |
 | `gostorm_url` | `http://127.0.0.1:8090` | GoStorm internal API URL |
 | `proxy_listen_port` | `8080` | GoStream FUSE HTTP port |
-| `metrics_port` | `8096` | Metrics, Control Panel, Webhook port |
+| `metrics_port` | `9080` | Metrics, Control Panel, Webhook port |
 | `blocklist_url` | *(BT_BlockLists)* | Gzipped IP blocklist URL (24 h refresh) |
 | `plex.url` | — | Plex server URL |
 | `plex.token` | — | Plex authentication token |
@@ -740,56 +736,48 @@ Environment="GOMEMLIMIT=2200MiB"
 Environment="GOGC=100"
 ```
 
-`GOMEMLIMIT=2200MiB` leaves headroom for OS, Samba, and Python scripts on a 4 GB Pi 4.
+`GOMEMLIMIT=2200MiB` leaves headroom for OS and Samba on a 4 GB Pi 4.
 
 ---
 
-## Sync Scripts
+## Sync Engine (Go Native)
 
-All scripts in `scripts/` resolve `config.json` from the parent directory automatically. Override with `MKV_PROXY_CONFIG_PATH`.
+All sync logic runs natively inside the Go binary. No Python, no external scripts, no subprocess overhead. Configure schedules from the Control Panel at `:9080/control` → **Sync Scheduler**.
 
-### `gostorm-sync-complete.py` Movie Sync
+### Movies Sync
 
-Queries TMDB Discover + Popular (Italian + English, region IT+US), evaluates Torrentio results, adds the best torrent.
+Queries TMDB Discover + Popular (Italian + English, region IT+US), evaluates Prowlarr/Torrentio results, adds the best torrent.
 
+Trigger from Control Panel → Sync Scheduler → Movies → "Run now", or via API:
 ```bash
-python3 scripts/gostorm-sync-complete.py
+curl -X POST http://127.0.0.1:9080/api/scheduler/movies/run
 ```
 
 - Quality: `4K DV > 4K HDR10+ > 4K HDR > 4K > 1080p REMUX > 1080p`
 - Min seeders: 20 · Min size: 10 GB (4K), 3 GB (1080p)
 - Skips existing films (by TMDB ID) · Upgrades lower-quality entries
 
-### `gostorm-tv-sync.py` TV Sync
+### TV Sync
 
 ```bash
-python3 scripts/gostorm-tv-sync.py
+curl -X POST http://127.0.0.1:9080/api/scheduler/tv/run
 ```
 
 Fullpack-first approach — prefers complete season packs. Plex/Jellyfin-compatible directory structure:
 ```
-Show Name/
+Show Name (Year)/
   Season.01/
-    Show.Name_S01E01_<hash>.mkv
-    Show.Name_S01E02_<hash>.mkv
+    Show.Name_S01E01_<hash8>.mkv
+    Show.Name_S01E02_<hash8>.mkv
 ```
 
-### `plex-watchlist-sync.py` Watchlist Sync
+### Watchlist Sync
 
 ```bash
-python3 scripts/plex-watchlist-sync.py [--dry-run] [--verbose]
+curl -X POST http://127.0.0.1:9080/api/scheduler/watchlist/run
 ```
 
-Reads Plex cloud watchlist → IMDB ID resolution → Torrentio (min 10 seeders) → GoStorm.
-
-### `health-monitor.py` Dashboard
-
-```bash
-python3 scripts/health-monitor.py
-# or: sudo systemctl start health-monitor
-```
-
-Real-time dashboard at `:8095`. See [Health Monitor Dashboard](#-health-monitor-dashboard).
+Reads Plex cloud watchlist → IMDB ID resolution → Prowlarr/Torrentio (min 10 seeders) → GoStorm.
 
 ---
 
@@ -894,8 +882,7 @@ docker run -d \
   -v /mnt/gostream-mkv-real:/mnt/gostream-mkv-real \
   -v /mnt/gostream-mkv-virtual:/mnt/gostream-mkv-virtual \
   -p 8090:8090 \
-  -p 8095:8095 \
-  -p 8096:8096 \
+  -p 9080:9080 \
   mrrobotogit/gostream:latest
 ```
 
@@ -951,14 +938,14 @@ curl -X POST -H 'Content-Type: application/json' \
   -d '{"action":"rem","hash":"<infohash>"}' http://127.0.0.1:8090/torrents
 ```
 
-### GoStream Metrics API (`:8096`)
+### GoStream Metrics API (`:9080`)
 
 ```bash
 # Full metrics
-curl -s http://127.0.0.1:8096/metrics | jq
+curl -s http://127.0.0.1:9080/metrics | jq
 
 # Key fields
-curl -s http://127.0.0.1:8096/metrics | \
+curl -s http://127.0.0.1:9080/metrics | \
   jq '{version, uptime, read_ahead_active_bytes, config_source}'
 ```
 
@@ -971,7 +958,7 @@ curl -s http://127.0.0.1:8096/metrics | \
 
 Check warmup cache:
 ```bash
-curl -s http://127.0.0.1:8096/metrics | jq '.read_ahead_active_bytes'
+curl -s http://127.0.0.1:9080/metrics | jq '.read_ahead_active_bytes'
 ```
 
 If empty, force a Plex/Jellyfin library scan. The scan reads the first MB of each file and populates the SSD head warmup.
@@ -1046,7 +1033,7 @@ sudo chown pi:pi /mnt/gostream-mkv-virtual
 
 Verify connectivity:
 ```bash
-curl -v http://127.0.0.1:8096/plex/webhook \
+curl -v http://127.0.0.1:9080/plex/webhook \
   -X POST -H 'Content-Type: application/json' \
   -d '{"event":"media.play","Metadata":{"librarySectionType":"movie","guid":"imdb://tt1234567","Guid":[{"id":"imdb://tt1234567"}]}}'
 ```
@@ -1067,7 +1054,7 @@ If the connection appears in logs but IMDB matching fails, verify the raw payloa
 
 Profile the live binary:
 ```bash
-go tool pprof -top "http://127.0.0.1:8096/debug/pprof/profile?seconds=30"
+go tool pprof -top "http://127.0.0.1:9080/debug/pprof/profile?seconds=30"
 ```
 
 Expected hot paths: `sha1.blockGeneric` (no crypto extensions on Pi 4 A72), `io.ReadFull`, `sync.(*Mutex).Lock`. Regenerating the PGO profile typically reduces CPU 5–7%.
@@ -1086,9 +1073,8 @@ Paths below use the defaults set by `install.sh`. All are configurable during in
 |------|---------|
 | `~/GoStream/gostream` | Production binary |
 | `~/GoStream/config.json` | Live configuration (edit → `sudo systemctl restart gostream`) |
-| `~/GoStream/scripts/` | Python sync & monitor scripts |
-| `~/GoStream/STATE/` | Inode map, sync caches (co-located with install dir) |
-| `~/logs/gostream.log` | Main service log |
+| `~/GoStream/STATE/` | Inode map, sync caches, scheduler state (co-located with install dir) |
+| `~/GoStream/logs/` | All service logs (`gostream.log`, `movies-sync.log`, `tv-sync.log`, `watchlist-sync.log`) |
 | `/mnt/gostream-mkv-virtual/` | FUSE mount point (served to Plex/Jellyfin -> Samba) |
 | `/etc/systemd/system/gostream.service` | systemd service definition |
 

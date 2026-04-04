@@ -29,7 +29,6 @@ services:
 
       # GoStream / GoStorm
       - "${GOSTORM_HOST_PORT}:8090"
-      - "${HEALTH_HOST_PORT}:8095"
       - "${METRICS_HOST_PORT}:${GOSTREAM_METRICS_PORT}"
 
     environment:
@@ -39,8 +38,6 @@ services:
       - GOSTREAM_MOUNT_PATH=/gostream/mount
       - GOSTREAM_STATE_DIR=/gostream/state/STATE
       - GOSTREAM_LOG_DIR=/gostream/state/logs
-      - GOSTREAM_HEALTH_MONITOR_ENABLED=1
-      - HEALTH_MONITOR_PORT=8095
       # LinuxServer base image vars — BAT may provide overrides or defaults
       - PUID=${PUID}
       - PGID=${PGID}

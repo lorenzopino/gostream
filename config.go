@@ -34,6 +34,39 @@ type SchedulerConfig struct {
 	WatchlistSync WatchlistSyncConfig `json:"watchlist_sync"`
 }
 
+// EngineConfig holds per-engine paths for subprocess sync.
+type EngineConfig struct {
+	ScriptPath string
+	LogsDir    string
+}
+
+// QualityWeights defines scoring weights for movie selection.
+type QualityWeights struct {
+	Res4K           int `json:"res_4k"`
+	Res1080p        int `json:"res_1080p"`
+	HDR             int `json:"hdr"`
+	DolbyVision     int `json:"dolby_vision"`
+	HDR10Plus       int `json:"hdr10_plus"`
+	Atmos           int `json:"atmos"`
+	Audio51         int `json:"audio_5_1"`
+	Stereo          int `json:"stereo"`
+	BluRay          int `json:"bluray"`
+	SeederBonus     int `json:"seeder_bonus"`
+	SeederThreshold int `json:"seeder_threshold"`
+}
+
+// TVQualityWeights extends QualityWeights with TV-specific bonuses.
+type TVQualityWeights struct {
+	QualityWeights
+	FullpackBonus int `json:"fullpack_bonus"`
+}
+
+// QualityScoringConfig holds optional quality scoring profiles.
+type QualityScoringConfig struct {
+	Movies *QualityWeights   `json:"movies,omitempty"`
+	TV     *TVQualityWeights `json:"tv,omitempty"`
+}
+
 // Config holds all configurable parameters for the FUSE proxy
 type Config struct {
 	// --- Internal / Derived Fields ---
@@ -135,6 +168,15 @@ type Config struct {
 	// --- Built-in Sync Scheduler ---
 	Scheduler SchedulerConfig `json:"scheduler"`
 
+	// --- Media Server ---
+	MediaServerType string `json:"media_server_type"` // "plex" | "jellyfin"
+
+	// --- Quality Scoring ---
+	QualityScoringConfig QualityScoringConfig `json:"quality_scoring"`
+
+	// --- Engine Scripts (populated in LoadConfig, not from JSON) ---
+	EngineScripts map[string]EngineConfig `json:"-"`
+
 	// --- Telemetry (V1.4.7) ---
 	TelemetryID     string `json:"telemetry_id"`
 	EnableTelemetry bool   `json:"telemetry"`
@@ -195,7 +237,7 @@ func LoadConfig() Config {
 		GoStormBaseURL:  "http://127.0.0.1:8090",
 		AIURL:           "http://127.0.0.1:8085", // Default Pi internal AI port (V1.4.5)
 		ProxyListenPort: 8080,
-		MetricsPort:     8096,
+		MetricsPort:     9080,
 
 		EnableTelemetry: true,
 		TelemetryURL:    "https://telemetry.gostream.workers.dev",
@@ -255,6 +297,17 @@ func LoadConfig() Config {
 
 	// 5. Finalize and map derived fields
 	cfg.finalize()
+
+	// 5b. Populate engine script paths
+	exe, _ := os.Executable()
+	binDir := filepath.Dir(exe)
+	scriptsDir := filepath.Join(binDir, "scripts")
+	logsDir := filepath.Join(binDir, "logs")
+	cfg.EngineScripts = map[string]EngineConfig{
+		"movies":    {ScriptPath: filepath.Join(scriptsDir, "gostorm-sync-complete.py"), LogsDir: logsDir},
+		"tv":        {ScriptPath: filepath.Join(scriptsDir, "gostorm-tv-sync.py"), LogsDir: logsDir},
+		"watchlist": {ScriptPath: filepath.Join(scriptsDir, "plex-watchlist-sync.py"), LogsDir: logsDir},
+	}
 
 	// 6. Generate Telemetry ID if missing
 	if cfg.TelemetryID == "" {

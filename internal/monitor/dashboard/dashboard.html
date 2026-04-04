@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GoStream Health Monitor</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+body{background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);min-height:100vh}
+.glass{background:rgba(30,41,59,.8);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.1)}
+.pulse-ok{animation:pok 2s infinite}
+.pulse-err{animation:perr 1s infinite}
+@keyframes pok{0%,100%{opacity:1}50%{opacity:.7}}
+@keyframes perr{0%,100%{opacity:1}50%{opacity:.5}}
+.log-line{font-family:ui-monospace,monospace;font-size:.75rem;line-height:1.4;white-space:pre-wrap;word-break:break-all}
+</style>
+</head>
+<body class="text-slate-100 p-4 md:p-8">
+<div class="max-w-7xl mx-auto">
+
+<!-- Header -->
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-2xl md:text-3xl font-bold">GoStream Health Monitor</h1>
+  <div class="flex items-center gap-4">
+    <span class="text-sm text-slate-400">Last update: <span id="lastUpdate">--:--:--</span></span>
+    <button onclick="doRestart()" class="bg-slate-700 hover:bg-red-600 text-white text-xs py-1.5 px-3 rounded transition">Restart GoStream</button>
+  </div>
+</div>
+
+<!-- Speed + Torrents -->
+<div class="grid md:grid-cols-2 gap-4 mb-6">
+  <div class="glass rounded-xl p-4">
+    <div class="flex items-center justify-between mb-3">
+      <span class="text-xs text-slate-400 uppercase tracking-wider">Download Speed</span>
+      <span class="text-2xl font-bold"><span id="speed">0</span> <span class="text-sm text-slate-400">Mbps</span></span>
+    </div>
+    <div style="height:150px;position:relative"><canvas id="speedChart"></canvas></div>
+  </div>
+  <div class="glass rounded-xl p-4">
+    <div class="flex items-center justify-between mb-3">
+      <span class="text-xs text-slate-400 uppercase tracking-wider">Torrents</span>
+      <span class="text-sm text-slate-400"><span id="totalT">0</span> total</span>
+    </div>
+    <div class="grid grid-cols-3 gap-4 text-center mb-4">
+      <div><div class="text-3xl font-bold text-green-400" id="activeT">0</div><div class="text-xs text-slate-400">Active</div></div>
+      <div><div class="text-3xl font-bold text-blue-400" id="peersT">0</div><div class="text-xs text-slate-400">Peers</div></div>
+      <div><div class="text-3xl font-bold text-purple-400" id="seedersT">0</div><div class="text-xs text-slate-400">Seeders</div></div>
+    </div>
+    <!-- FUSE Buffer Bar -->
+    <div class="pt-3 border-t border-slate-700">
+      <div class="flex items-center justify-between mb-1">
+        <span class="text-xs text-slate-400">FUSE Buffer</span>
+        <span class="text-xs text-slate-500" id="fuseBudget">-- MB</span>
+      </div>
+      <div class="h-2.5 bg-slate-900 rounded-full overflow-hidden flex">
+        <div id="fuseActiveBar" class="h-full bg-blue-500 transition-all duration-500" style="width:0%"></div>
+        <div id="fuseStaleBar" class="h-full bg-slate-500 transition-all duration-500" style="width:0%"></div>
+      </div>
+      <div class="flex items-center gap-4 mt-1 text-xs text-slate-500">
+        <span><span class="inline-block w-2 h-2 bg-blue-500 rounded mr-1"></span>Active <span class="text-blue-400" id="fuseActivePct">0%</span></span>
+        <span><span class="inline-block w-2 h-2 bg-slate-500 rounded mr-1"></span>Stale <span id="fuseStalePct">0%</span></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Active Streams -->
+<div class="glass rounded-xl p-4 mb-6">
+  <div class="text-xs text-slate-400 uppercase tracking-wider mb-3">Active Streams</div>
+  <div id="streams" class="space-y-2 max-h-64 overflow-y-auto"><div class="text-slate-500 text-sm">No active streams</div></div>
+</div>
+
+<!-- Service Cards -->
+<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+  <div class="glass rounded-xl p-4" id="c-gostorm">
+    <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">GoStorm</div>
+    <div class="flex items-center gap-2"><span id="s-gostorm" class="text-2xl">&#9679;</span><span id="l-gostorm" class="text-lg font-bold">--</span></div>
+  </div>
+  <div class="glass rounded-xl p-4" id="c-fuse">
+    <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">FUSE</div>
+    <div class="flex items-center gap-2"><span id="s-fuse" class="text-2xl">&#9679;</span><span id="l-fuse" class="text-lg font-bold">--</span></div>
+  </div>
+  <div class="glass rounded-xl p-4" id="c-vpn">
+    <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">VPN</div>
+    <div class="flex items-center gap-2"><span id="s-vpn" class="text-2xl">&#9679;</span><span id="l-vpn" class="text-lg font-bold">--</span></div>
+  </div>
+  <div class="glass rounded-xl p-4" id="c-natpmp">
+    <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">NAT-PMP</div>
+    <div class="flex items-center gap-2"><span id="s-natpmp" class="text-2xl">&#9679;</span><span id="l-natpmp" class="text-lg font-bold">--</span></div>
+  </div>
+  <div class="glass rounded-xl p-4" id="c-plex">
+    <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">Plex</div>
+    <div class="flex items-center gap-2"><span id="s-plex" class="text-2xl">&#9679;</span><span id="l-plex" class="text-lg font-bold">--</span></div>
+  </div>
+  <div class="glass rounded-xl p-4">
+    <div class="text-xs text-slate-400 uppercase tracking-wider mb-2">System</div>
+    <div class="space-y-1 text-sm">
+      <div class="flex justify-between"><span class="text-slate-400">CPU</span><span id="cpu" class="font-mono">--%</span></div>
+      <div class="flex justify-between"><span class="text-slate-400">RAM</span><span id="ram" class="font-mono">--%</span></div>
+      <div class="flex justify-between"><span class="text-slate-400">Disk</span><span id="disk" class="font-mono">-- GB</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- Sync Scheduler -->
+<div class="grid md:grid-cols-2 gap-4 mb-6">
+  <div class="glass rounded-xl p-4">
+    <div class="flex items-center justify-between mb-3">
+      <span class="text-xs text-slate-400 uppercase tracking-wider">Sync Scheduler</span>
+      <a href="/control" class="text-xs text-blue-400 hover:text-blue-300">Control Panel &rarr;</a>
+    </div>
+    <div id="scheduler" class="space-y-2"><div class="text-slate-500 text-sm">Loading...</div></div>
+  </div>
+  <!-- Logs -->
+  <div class="glass rounded-xl p-4">
+    <div class="flex items-center justify-between mb-3">
+      <span class="text-xs text-slate-400 uppercase tracking-wider">Logs</span>
+      <select id="logFile" onchange="loadLogs()" class="bg-slate-700 text-xs text-slate-300 rounded px-2 py-1 border border-slate-600">
+        <option value="gostream">gostream</option>
+        <option value="movies-sync">movies-sync</option>
+        <option value="tv-sync">tv-sync</option>
+        <option value="watchlist-sync">watchlist-sync</option>
+      </select>
+    </div>
+    <div id="logView" class="bg-slate-900/80 rounded-lg p-3 max-h-48 overflow-y-auto text-xs font-mono text-slate-400">
+      <div>Loading...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Footer -->
+<div class="flex items-center justify-between text-xs text-slate-600 mt-4">
+  <span>Uptime: <span id="uptime">--</span></span>
+  <span>GoStream Unified Engine</span>
+</div>
+
+</div>
+<script>
+let chart;
+const svcKeys=['gostorm','fuse','vpn','natpmp','plex'];
+
+function initChart(){
+  const ctx=document.getElementById('speedChart').getContext('2d');
+  chart=new Chart(ctx,{
+    type:'line',
+    data:{labels:[],datasets:[{data:[],borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,0.1)',fill:true,tension:.3,pointRadius:0,borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{beginAtZero:true,grid:{color:'rgba(255,255,255,0.05)'},ticks:{color:'#64748b',callback:v=>v.toFixed(0)+' Mbps'}}},animation:{duration:300}}
+  });
+}
+
+function svc(el,st){
+  const dot=document.getElementById('s-'+el),lbl=document.getElementById('l-'+el);
+  if(st.ok){dot.style.color='#22c55e';dot.className='text-2xl pulse-ok';lbl.textContent=st.latency_ms+'ms';}
+  else{dot.style.color='#ef4444';dot.className='text-2xl pulse-err';lbl.textContent=st.message||'down';}
+  if(el==='fuse'&&st.ok&&st.message)lbl.textContent=st.message;
+  if(el==='natpmp'&&st.ok&&st.message)lbl.textContent=st.message;
+}
+
+function fmtSize(b){if(!b||b<1024)return'0 B';const u=['B','KB','MB','GB','TB'];let i=0,v=b;while(v>=1024&&i<u.length-1){v/=1024;i++}return v.toFixed(1)+' '+u[i]}
+function trunc(t,n){return t&&t.length>n?t.slice(0,n)+'...':t||'--'}
+
+async function load(){
+  try{
+    const[hR,tR,sR]=await Promise.all([fetch('/api/health'),fetch('/api/torrents'),fetch('/api/speed-history')]);
+    const h=await hR.json(),torrents=await tR.json(),history=await sR.json();
+
+    document.getElementById('lastUpdate').textContent=new Date().toLocaleTimeString();
+    document.getElementById('uptime').textContent=h.uptime;
+    document.getElementById('speed').textContent=h.download_mbps.toFixed(1);
+    document.getElementById('totalT').textContent=h.total_torrents;
+    document.getElementById('activeT').textContent=h.active_count;
+    document.getElementById('peersT').textContent=h.total_peers;
+    document.getElementById('seedersT').textContent=h.total_seeders;
+    document.getElementById('cpu').textContent=h.cpu_pct.toFixed(1)+'%';
+    document.getElementById('ram').textContent=h.ram_pct.toFixed(1)+'%';
+    document.getElementById('disk').textContent=h.disk_free_gb.toFixed(1)+' GB free';
+
+    // FUSE buffer
+    document.getElementById('fuseActiveBar').style.width=Math.min(100,h.fuse_active_pct).toFixed(1)+'%';
+    document.getElementById('fuseStaleBar').style.width=Math.min(100,h.fuse_stale_pct).toFixed(1)+'%';
+    document.getElementById('fuseActivePct').textContent=h.fuse_active_pct.toFixed(1)+'%';
+    document.getElementById('fuseStalePct').textContent=h.fuse_stale_pct.toFixed(1)+'%';
+    document.getElementById('fuseBudget').textContent=h.fuse_budget_mb.toFixed(0)+' MB budget';
+
+    svcKeys.forEach(k=>svc(k,h[k]));
+
+    if(chart&&history.length){
+      chart.data.labels=history.map((_,i)=>i);
+      chart.data.datasets[0].data=history.map(p=>p.v);
+      chart.update('none');
+    }
+
+    // Active streams
+    const active=(torrents||[]).filter(t=>t.status!=='idle').sort((a,b)=>b.speed_mbs-a.speed_mbs);
+    const el=document.getElementById('streams');
+    if(!active.length){el.innerHTML='<div class="text-slate-500 text-sm">No active streams</div>';}
+    else{el.innerHTML=active.map(t=>{
+      const speedTxt=t.speed_mbs>0.01?`${(t.speed_mbs*8).toFixed(1)} Mbps`:(t.status==='streaming'?'Streaming':'Idle');
+      const speedCls=t.speed_mbs>0.01?'text-green-400':(t.status==='streaming'?'text-blue-400':'text-slate-500');
+      const badges=[];
+      if(t.is_4k)badges.push('<span class="bg-purple-600/30 text-purple-300 px-1.5 py-0.5 rounded">4K</span>');
+      else if(t.is_1080p)badges.push('<span class="bg-blue-600/30 text-blue-300 px-1.5 py-0.5 rounded">1080p</span>');
+      if(t.is_dv)badges.push('<span class="bg-pink-600/30 text-pink-300 px-1.5 py-0.5 rounded">DV</span>');
+      else if(t.is_hdr)badges.push('<span class="bg-amber-600/30 text-amber-300 px-1.5 py-0.5 rounded">HDR</span>');
+      if(t.audio)badges.push('<span class="bg-cyan-600/30 text-cyan-300 px-1.5 py-0.5 rounded">'+t.audio+(t.channels?' '+t.channels:'')+'</span>');
+      if(t.is_priority)badges.push('<span class="bg-yellow-600/30 text-yellow-400 px-1.5 py-0.5 rounded">Priority</span>');
+      const badgeHtml=badges.length?'<div class="flex gap-1 mt-1 text-xs">'+badges.join('')+'</div>':'';
+      const poster=t.poster?`<img src="${t.poster}" class="w-12 h-16 object-cover rounded flex-shrink-0" onerror="this.style.display='none'">`:'';
+      const title=t.clean_title||(t.title||'--');
+      const year=t.year?` (${t.year})`:'';
+      return`<div class="flex items-center gap-3 py-2 px-3 bg-slate-800/50 rounded-lg">
+      ${poster}
+      <div class="flex-1 min-w-0">
+        <div class="text-sm font-semibold truncate">${trunc(title,60)}${year}</div>
+        <div class="text-xs text-slate-500">${t.hash.slice(0,8)}... &middot; ${fmtSize(t.size)}</div>
+        ${badgeHtml}
+      </div>
+      <div class="text-right flex-shrink-0">
+        <div class="text-sm font-bold ${speedCls}">${speedTxt}</div>
+        <div class="text-xs text-slate-500">${t.peers} peers / ${t.seeders} seeders</div>
+      </div>
+    </div>`;}).join('');}
+  }catch(e){document.getElementById('lastUpdate').textContent='connection error';}
+
+  // Scheduler
+  try{
+    const sr=await fetch('/api/scheduler/status');
+    if(sr.ok){
+      const sched=await sr.json();const el=document.getElementById('scheduler');
+      const jobs=Object.entries(sched);
+      if(!jobs.length){el.innerHTML='<div class="text-slate-500 text-sm">No jobs configured</div>';return;}
+      el.innerHTML=jobs.map(([name,st])=>{
+        const running=st.running;
+        const dot=running?'<span class="text-green-400 pulse-ok">&#9679;</span>':'<span class="text-slate-500">&#9679;</span>';
+        const status=running?'Running':(st.last_status==='ok'?'OK':(st.last_status||'Idle'));
+        const next=st.next_run?new Date(st.next_run).toLocaleTimeString():'--';
+        const err=st.last_error?`<div class="text-xs text-red-400 mt-1">${st.last_error}</div>`:'';
+        return`<div class="flex items-center justify-between bg-slate-800/50 rounded-lg px-3 py-2">
+          <div class="flex items-center gap-2">${dot}<span class="text-sm font-semibold capitalize">${name}</span>
+            <span class="text-xs text-slate-500">${status} &middot; Next: ${next}</span>${err}</div>
+          ${running
+            ?`<button onclick="stopSync('${name}')" class="bg-red-700 hover:bg-red-600 text-white text-xs py-1 px-3 rounded transition">Stop</button>`
+            :`<button onclick="triggerSync('${name}')" class="bg-slate-600 hover:bg-blue-600 text-white text-xs py-1 px-3 rounded transition">Run</button>`}
+        </div>`;
+      }).join('');
+    }
+  }catch(e){}
+}
+
+async function loadLogs(){
+  const file=document.getElementById('logFile').value;
+  const el=document.getElementById('logView');
+  try{
+    const r=await fetch(`/api/logs?file=${file}&lines=80`);
+    const d=await r.json();
+    const lines=d.lines||[];
+    if(!lines.length){el.innerHTML='<div class="text-slate-500">No logs</div>';return;}
+    el.innerHTML=lines.map(l=>{
+      let cls='text-slate-400';
+      if(/\bERROR\b/i.test(l))cls='text-red-400';
+      else if(/\bWARN/i.test(l))cls='text-yellow-400';
+      else if(/\bSUCCESS|Created|✅/i.test(l))cls='text-green-400';
+      return`<div class="log-line ${cls}">${l.replace(/</g,'&lt;')}</div>`;
+    }).join('');
+    el.scrollTop=el.scrollHeight;
+  }catch(e){el.innerHTML='<div class="text-red-400">Failed to load logs</div>';}
+}
+
+async function triggerSync(name){
+  try{const r=await fetch(`/api/scheduler/${name}/run`,{method:'POST'});
+    if(r.status===409)alert(name+' is already running');
+    else if(r.ok)setTimeout(load,1000);
+  }catch(e){}
+}
+
+async function stopSync(name){
+  if(!confirm(`Stop ${name} sync?`))return;
+  try{await fetch(`/api/scheduler/${name}/stop`,{method:'POST'});}catch(e){}
+  setTimeout(load,1000);
+}
+
+function doRestart(){
+  if(!confirm('Restart GoStream? Active streams will be interrupted.'))return;
+  fetch('/api/restart',{method:'POST'}).then(()=>{
+    document.body.innerHTML='<div class="flex items-center justify-center h-screen text-2xl text-slate-400">Restarting... please wait</div>';
+    setTimeout(()=>location.reload(),8000);
+  }).catch(()=>{});
+}
+
+initChart();
+load();
+loadLogs();
+setInterval(load,5000);
+setInterval(loadLogs,15000);
+</script>
+</body>
+</html>

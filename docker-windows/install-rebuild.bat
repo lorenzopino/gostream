@@ -369,7 +369,6 @@ echo Ports (host -> container):
 echo   PLEX_HOST_PORT     : %PLEX_HOST_PORT% ^> 32400
 echo   JELLYFIN_HOST_PORT : %JELLYFIN_HOST_PORT% ^> 8096
 echo   GOSTORM_HOST_PORT  : %GOSTORM_HOST_PORT% ^> 8090
-echo   HEALTH_HOST_PORT   : %HEALTH_HOST_PORT% ^> 8095
 echo   METRICS_HOST_PORT  : %METRICS_HOST_PORT% ^> %GOSTREAM_METRICS_PORT%
 echo   Internal metrics   : %GOSTREAM_METRICS_PORT%
 echo.
@@ -605,7 +604,7 @@ set "__CFG=%_cfg%"
 set "__BAK=%_backupDir%"
 set "__FLAVOR=%_flavor%"
 
-for /f "usebackq tokens=1* delims==" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $cfg=$env:__CFG; $backupDir=$env:__BAK; $flavor=$env:__FLAVOR; if(-not (Test-Path -LiteralPath $cfg)) { throw 'config.json missing' }; $raw=Get-Content -Raw -LiteralPath $cfg; $obj=$raw | ConvertFrom-Json; $changed=$false; if($null -eq $obj.physical_source_path -or $obj.physical_source_path -ne '/gostream/source'){ $obj.physical_source_path='/gostream/source'; $changed=$true }; if($null -eq $obj.fuse_mount_path -or $obj.fuse_mount_path -ne '/gostream/mount'){ $obj.fuse_mount_path='/gostream/mount'; $changed=$true }; if($flavor -eq 'jellyfin'){ $desiredMetrics=8097; if($null -eq $obj.metrics_port -or [int]$obj.metrics_port -ne $desiredMetrics){ $obj.metrics_port=$desiredMetrics; $changed=$true } }; if($flavor -eq 'plex'){ if($null -eq $obj.metrics_port){ $obj.metrics_port=8096; $changed=$true } }; $bak=''; if($changed -and $flavor -eq 'jellyfin'){ New-Item -ItemType Directory -Force -Path $backupDir | Out-Null; $ts=Get-Date -Format 'yyyyMMdd-HHmmss'; $bak=Join-Path $backupDir ('config.json.'+$ts+'.bak'); Copy-Item -LiteralPath $cfg -Destination $bak -Force }; if($changed){ ($obj | ConvertTo-Json -Depth 64) | Set-Content -LiteralPath $cfg -Encoding UTF8 }; Write-Output ('CONFIG_CHANGED=' + ($(if($changed){'1'}else{'0'}))); Write-Output ('CONFIG_BACKUP=' + $bak); Write-Output ('GOSTREAM_METRICS_PORT=' + ([int]$obj.metrics_port)) }"`) do (
+for /f "usebackq tokens=1* delims==" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $cfg=$env:__CFG; $backupDir=$env:__BAK; $flavor=$env:__FLAVOR; if(-not (Test-Path -LiteralPath $cfg)) { throw 'config.json missing' }; $raw=Get-Content -Raw -LiteralPath $cfg; $obj=$raw | ConvertFrom-Json; $changed=$false; if($null -eq $obj.physical_source_path -or $obj.physical_source_path -ne '/gostream/source'){ $obj.physical_source_path='/gostream/source'; $changed=$true }; if($null -eq $obj.fuse_mount_path -or $obj.fuse_mount_path -ne '/gostream/mount'){ $obj.fuse_mount_path='/gostream/mount'; $changed=$true }; if($null -eq $obj.metrics_port -or [int]$obj.metrics_port -eq 8096){ $obj.metrics_port=9080; $changed=$true }; $bak=''; if($changed -and $flavor -eq 'jellyfin'){ New-Item -ItemType Directory -Force -Path $backupDir | Out-Null; $ts=Get-Date -Format 'yyyyMMdd-HHmmss'; $bak=Join-Path $backupDir ('config.json.'+$ts+'.bak'); Copy-Item -LiteralPath $cfg -Destination $bak -Force }; if($changed){ ($obj | ConvertTo-Json -Depth 64) | Set-Content -LiteralPath $cfg -Encoding UTF8 }; Write-Output ('CONFIG_CHANGED=' + ($(if($changed){'1'}else{'0'}))); Write-Output ('CONFIG_BACKUP=' + $bak); Write-Output ('GOSTREAM_METRICS_PORT=' + ([int]$obj.metrics_port)) }"`) do (
   if /i "%%A"=="CONFIG_CHANGED" set "CONFIG_CHANGED=%%B"
   if /i "%%A"=="CONFIG_BACKUP" set "CONFIG_BACKUP=%%B"
   if /i "%%A"=="GOSTREAM_METRICS_PORT" set "GOSTREAM_METRICS_PORT=%%B"
@@ -623,7 +622,7 @@ if "%_internal%"=="" exit /b 1
 
 set "__INTERNAL=%_internal%"
 
-for /f "usebackq tokens=1* delims==" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $internal=[int]$env:__INTERNAL; $used = New-Object System.Collections.Generic.HashSet[int]; $ids = @(); try { $ids = docker ps -aq 2>$null } catch { $ids=@() }; foreach($id in $ids){ try { $j = docker inspect $id | ConvertFrom-Json } catch { continue }; if($null -eq $j -or $j.Count -lt 1){ continue }; $ports = $j[0].NetworkSettings.Ports; if($null -eq $ports){ continue }; foreach($prop in $ports.PSObject.Properties){ $bindings = $prop.Value; if($null -eq $bindings){ continue }; foreach($b in $bindings){ if($null -ne $b.HostPort -and $b.HostPort -match '^[0-9]+$'){ [void]$used.Add([int]$b.HostPort) } } } }; $reserved = New-Object System.Collections.Generic.HashSet[int]; function NextFree([int]$start){ $p=$start; while($used.Contains($p) -or $reserved.Contains($p)){ $p++ }; [void]$reserved.Add($p); return $p }; $plex = NextFree 32400; $jelly = NextFree 8096; $gostorm = NextFree 8090; $health = NextFree 8095; $metrics = NextFree $internal; Write-Output ('PLEX_HOST_PORT='+$plex); Write-Output ('JELLYFIN_HOST_PORT='+$jelly); Write-Output ('GOSTORM_HOST_PORT='+$gostorm); Write-Output ('HEALTH_HOST_PORT='+$health); Write-Output ('METRICS_HOST_PORT='+$metrics) }"`) do (
+for /f "usebackq tokens=1* delims==" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $internal=[int]$env:__INTERNAL; $used = New-Object System.Collections.Generic.HashSet[int]; $ids = @(); try { $ids = docker ps -aq 2>$null } catch { $ids=@() }; foreach($id in $ids){ try { $j = docker inspect $id | ConvertFrom-Json } catch { continue }; if($null -eq $j -or $j.Count -lt 1){ continue }; $ports = $j[0].NetworkSettings.Ports; if($null -eq $ports){ continue }; foreach($prop in $ports.PSObject.Properties){ $bindings = $prop.Value; if($null -eq $bindings){ continue }; foreach($b in $bindings){ if($null -ne $b.HostPort -and $b.HostPort -match '^[0-9]+$'){ [void]$used.Add([int]$b.HostPort) } } } }; $reserved = New-Object System.Collections.Generic.HashSet[int]; function NextFree([int]$start){ $p=$start; while($used.Contains($p) -or $reserved.Contains($p)){ $p++ }; [void]$reserved.Add($p); return $p }; $plex = NextFree 32400; $jelly = NextFree 8096; $gostorm = NextFree 8090; $metrics = NextFree 9080; Write-Output ('PLEX_HOST_PORT='+$plex); Write-Output ('JELLYFIN_HOST_PORT='+$jelly); Write-Output ('GOSTORM_HOST_PORT='+$gostorm); Write-Output ('METRICS_HOST_PORT='+$metrics) }"`) do (
   set "%%A=%%B"
 )
 
@@ -760,16 +759,6 @@ if %_rc% GEQ 8 (
   exit /b 1
 )
 
-REM Python scripts + optional ai package (for gostream import graph)
-echo [stack] Copying scripts
-robocopy "%REPO_ROOT%\scripts" "%_stackDir%\src\scripts" /E /R:2 /W:2 /NFL /NDL /NJH /NJS /NP
-set "_rc=%ERRORLEVEL%"
-echo [stack] scripts copy rc=%_rc%
-if %_rc% GEQ 8 (
-  echo ERROR: Failed to copy scripts\ into stack src\scripts ; robocopy exit code %_rc%
-  exit /b 1
-)
-
 if exist "%REPO_ROOT%\ai" (
   echo [stack] Copying ai Go files
   robocopy "%REPO_ROOT%\ai" "%_stackDir%\src\ai" *.go /E /R:2 /W:2 /NFL /NDL /NJH /NJS /NP
@@ -791,7 +780,6 @@ echo [stack] Writing .env
   echo PLEX_HOST_PORT=%PLEX_HOST_PORT%
   echo JELLYFIN_HOST_PORT=%JELLYFIN_HOST_PORT%
   echo GOSTORM_HOST_PORT=%GOSTORM_HOST_PORT%
-  echo HEALTH_HOST_PORT=%HEALTH_HOST_PORT%
   echo METRICS_HOST_PORT=%METRICS_HOST_PORT%
   echo.
   echo GOSTREAM_METRICS_PORT=%GOSTREAM_METRICS_PORT%

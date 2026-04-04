@@ -1,0 +1,74 @@
+package engines
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"gostream/internal/prowlarr"
+)
+
+// TVSyncer runs the TV sync in pure Go (Fase 3).
+type TVSyncer struct {
+	engine *TVGoEngine
+}
+
+// TVSyncerConfig holds config for the Go TV engine.
+type TVSyncerConfig struct {
+	GoStormURL   string
+	TMDBAPIKey   string
+	TorrentioURL string
+	PlexURL      string
+	PlexToken    string
+	PlexTVLib    int
+	TVDir        string
+	StateDir     string
+	LogsDir      string
+	ProwlarrCfg  prowlarr.ConfigProwlarr
+}
+
+// NewTVSyncer creates a new Go-based TV syncer.
+func NewTVSyncer(cfg TVSyncerConfig) *TVSyncer {
+	exe, _ := os.Executable()
+	binDir := filepath.Dir(exe)
+
+	tvDir := cfg.TVDir
+	if tvDir == "" {
+		tvDir = "/mnt/torrserver/tv"
+	}
+	stateDir := cfg.StateDir
+	if stateDir == "" {
+		stateDir = filepath.Join(binDir, "STATE")
+	}
+	logsDir := cfg.LogsDir
+	if logsDir == "" {
+		logsDir = filepath.Join(binDir, "logs")
+	}
+
+	engineCfg := TVEngineConfig{
+		GoStormURL:   cfg.GoStormURL,
+		TMDBAPIKey:   cfg.TMDBAPIKey,
+		TorrentioURL: cfg.TorrentioURL,
+		PlexURL:      cfg.PlexURL,
+		PlexToken:    cfg.PlexToken,
+		PlexTVLib:    cfg.PlexTVLib,
+		TVDir:        tvDir,
+		StateDir:     stateDir,
+		LogsDir:      logsDir,
+		ProwlarrCfg:  cfg.ProwlarrCfg,
+	}
+
+	return &TVSyncer{
+		engine: NewTVGoEngine(engineCfg),
+	}
+}
+
+func (s *TVSyncer) Name() string { return "tv" }
+
+func (s *TVSyncer) Run(ctx context.Context) error {
+	if err := s.engine.Run(ctx); err != nil {
+		return fmt.Errorf("tv sync: %w", err)
+	}
+	return nil
+}
