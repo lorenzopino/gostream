@@ -517,15 +517,44 @@ func (c *Collector) enrichTorrents(torrents []TorrentInfo) {
 			t.Channels = "2.0"
 		}
 
-		// Try Plex session match (by hash8 in filename — last 8 chars)
+		// Try Plex session match (by hash8 in filename — first 8 chars of InfoHash)
 		hash8 := t.Hash
 		if len(hash8) >= 8 {
-			hash8 = hash8[len(hash8)-8:]
+			hash8 = hash8[:8]
 		}
 		if sess, ok := sessions[hash8]; ok {
 			t.CleanTitle = sess.Title
 			t.Year = sess.Year
 			t.Poster = sess.Poster
+			// Override quality badges with authoritative Plex media info
+			if sess.VideoResolution != "" {
+				res := sess.VideoResolution
+				t.Is4K = res == "4k" || res == "2160"
+				t.Is1080p = res == "1080" && !t.Is4K
+				// Note: DV/HDR not available from Plex sessions; keep title-based detection
+			}
+			if sess.AudioCodec != "" {
+				switch {
+				case strings.Contains(sess.AudioCodec, "truehd"):
+					if t.Audio == "" { t.Audio = "TrueHD" }
+				case sess.AudioCodec == "eac3":
+					t.Audio = "DD+"
+				case strings.Contains(sess.AudioCodec, "dca"): // DTS family
+					t.Audio = "DTS"
+				case sess.AudioCodec == "ac3":
+					t.Audio = "DD5.1"
+				}
+			}
+			if sess.AudioChannels > 0 && t.Channels == "" {
+				switch sess.AudioChannels {
+				case 8:
+					t.Channels = "7.1"
+				case 6:
+					t.Channels = "5.1"
+				case 2:
+					t.Channels = "2.0"
+				}
+			}
 		}
 
 		// Fallback: clean title from raw torrent name
@@ -536,9 +565,12 @@ func (c *Collector) enrichTorrents(torrents []TorrentInfo) {
 }
 
 type plexSession struct {
-	Title  string
-	Year   string
-	Poster string
+	Title           string
+	Year            string
+	Poster          string
+	VideoResolution string // "4k", "1080", "720", …
+	AudioCodec      string // "eac3", "truehd", "dts", "ac3", …
+	AudioChannels   int    // 8=7.1, 6=5.1, 2=2.0
 }
 
 type plexMediaContainer struct {
@@ -547,12 +579,23 @@ type plexMediaContainer struct {
 }
 
 type plexVideo struct {
-	Title string `xml:"title,attr"`
-	Year  string `xml:"year,attr"`
-	Thumb string `xml:"thumb,attr"`
-	Parts []struct {
-		File string `xml:"file,attr"`
-	} `xml:"Media>Part"`
+	Type              string `xml:"type,attr"`            // "movie" or "episode"
+	Title             string `xml:"title,attr"`           // episode title (or movie title)
+	GrandparentTitle  string `xml:"grandparentTitle,attr"` // series title (episodes only)
+	GrandparentYear   string `xml:"grandparentYear,attr"`  // series year (episodes only)
+	Year              string `xml:"year,attr"`
+	Thumb             string `xml:"thumb,attr"`
+	GrandparentThumb  string `xml:"grandparentThumb,attr"` // series poster (episodes only)
+	ParentIndex       int    `xml:"parentIndex,attr"`      // season number
+	Index             int    `xml:"index,attr"`            // episode number
+	Media []struct {
+		VideoResolution string `xml:"videoResolution,attr"`
+		AudioCodec      string `xml:"audioCodec,attr"`
+		AudioChannels   int    `xml:"audioChannels,attr"`
+		Parts           []struct {
+			File string `xml:"file,attr"`
+		} `xml:"Part"`
+	} `xml:"Media"`
 }
 
 func (c *Collector) fetchPlexSessions() map[string]plexSession {
@@ -579,17 +622,36 @@ func (c *Collector) fetchPlexSessions() map[string]plexSession {
 
 	reHash8 := regexp.MustCompile(`_([a-f0-9]{8})\.mkv$`)
 	for _, v := range container.Videos {
-		poster := ""
-		if v.Thumb != "" {
-			poster = fmt.Sprintf("%s%s?X-Plex-Token=%s", c.plexURL, v.Thumb, c.plexToken)
+		// For episodes: use series title + series poster; for movies: use title + thumb
+		title := v.Title
+		year := v.Year
+		thumbPath := v.Thumb
+		if v.Type == "episode" && v.GrandparentTitle != "" {
+			title = v.GrandparentTitle
+			if v.GrandparentYear != "" {
+				year = v.GrandparentYear
+			}
+			if v.GrandparentThumb != "" {
+				thumbPath = v.GrandparentThumb
+			}
 		}
-		for _, p := range v.Parts {
-			m := reHash8.FindStringSubmatch(p.File)
-			if len(m) >= 2 {
-				result[m[1]] = plexSession{
-					Title:  v.Title,
-					Year:   v.Year,
-					Poster: poster,
+		poster := ""
+		if thumbPath != "" {
+			poster = fmt.Sprintf("%s%s?X-Plex-Token=%s", c.plexURL, thumbPath, c.plexToken)
+		}
+		for _, media := range v.Media {
+			sess := plexSession{
+				Title:           title,
+				Year:            year,
+				Poster:          poster,
+				VideoResolution: strings.ToLower(media.VideoResolution),
+				AudioCodec:      strings.ToLower(media.AudioCodec),
+				AudioChannels:   media.AudioChannels,
+			}
+			for _, p := range media.Parts {
+				m := reHash8.FindStringSubmatch(p.File)
+				if len(m) >= 2 {
+					result[m[1]] = sess
 				}
 			}
 		}
@@ -597,8 +659,17 @@ func (c *Collector) fetchPlexSessions() map[string]plexSession {
 	return result
 }
 
+var (
+	reVideoExt  = regexp.MustCompile(`(?i)\.(mkv|mp4|avi|mov|ts|m2ts)$`)
+	reHexHash8  = regexp.MustCompile(`[_.\s][a-f0-9]{8}$`)
+)
+
 func cleanTorrentTitle(raw string) string {
 	s := raw
+	// Strip video file extension (.mkv, .mp4, …) before any other processing
+	s = reVideoExt.ReplaceAllString(s, "")
+	// Remove 8-char hex hash suffix (e.g. _dfcbca0b or .dfcbca0b)
+	s = reHexHash8.ReplaceAllString(s, "")
 	// Remove CJK bracket blocks: 【...】
 	s = reCJKBrackets.ReplaceAllString(s, "")
 	// Remove square bracket blocks: [...]
