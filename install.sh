@@ -118,7 +118,7 @@ show_banner() {
     echo ""
     echo "  GoStream + GoStorm — Unified BitTorrent + FUSE Streaming Engine"
     echo "  Target:         $(uname -m) / $(uname -s), 24/7 production"
-    echo "  Includes:       cron setup, sudoers, Plex webhook guide"
+    echo "  Includes:       Samba (optional), built-in scheduler"
     echo ""
 }
 
@@ -129,7 +129,10 @@ install_system_deps() {
     # Only run on Debian/Ubuntu-based systems
     if ! command -v apt-get >/dev/null 2>&1; then
         print_warn "apt-get not found — skipping automatic dependency installation."
-        print_warn "Please install manually: git python3-pip fuse3 curl samba"
+        print_warn "Please install manually: git fuse3 curl"
+        if [ "${INSTALL_SAMBA:-true}" = "true" ]; then
+            print_warn "Samba: samba"
+        fi
         return 0
     fi
 
@@ -139,7 +142,10 @@ install_system_deps() {
     command -v git         >/dev/null 2>&1 || needed["git"]="git"
     command -v fusermount3 >/dev/null 2>&1 || needed["fusermount3"]="fuse3"
     command -v curl        >/dev/null 2>&1 || needed["curl"]="curl"
-    command -v samba       >/dev/null 2>&1 || needed["samba"]="samba"
+    # Samba is optional — only check if user wants it
+    if [ "${INSTALL_SAMBA:-true}" = "true" ]; then
+        dpkg -s samba        >/dev/null 2>&1 || needed["samba"]="samba"
+    fi
     # libfuse3-dev is required for CGO_ENABLED=1 compilation (provides fuse.h)
     dpkg -s libfuse3-dev   >/dev/null 2>&1 || needed["libfuse3-dev"]="libfuse3-dev"
     # gcc is required for CGO
@@ -214,13 +220,13 @@ check_prerequisites() {
 }
 
 # ==============================================================================
-# [1/5] System Paths
+# [1/3] System Paths + User/Group
 # ==============================================================================
 collect_paths() {
-    print_header "[1/5] System Paths"
+    print_header "[1/3] System Paths"
 
-    # V1.4.6: Auto-detect current directory, user and group for a seamless 'press-enter' experience
-    local default_install_dir="${SCRIPT_DIR}"
+    # Default: GoStream subdirectory next to the installer
+    local default_install_dir="${SCRIPT_DIR}/GoStream"
     local default_user
     default_user=$(whoami)
     local default_group
@@ -232,150 +238,32 @@ collect_paths() {
     ask "System user that owns GoStream" "$default_user" SYSTEM_USER
     ask "System group" "$default_group" SYSTEM_GROUP
 
-    # Derive BASE_DIR as INSTALL_DIR (V1.4.6: logs/ and STATE/ are now inside)
+    # Resolve to absolute path
+    INSTALL_DIR="$(cd "$(dirname "${INSTALL_DIR}")" 2>/dev/null && pwd)/$(basename "${INSTALL_DIR}")" || INSTALL_DIR="$(pwd)/${INSTALL_DIR}"
+    mkdir -p "${INSTALL_DIR}"
+
+    # Derive BASE_DIR as INSTALL_DIR
     BASE_DIR="${INSTALL_DIR}"
 
     echo ""
-    print_info "Derived base directory : ${BASE_DIR}"
-    print_info "Logs directory         : ${BASE_DIR}/logs/"
-    print_info "State directory        : ${BASE_DIR}/STATE/"
+    print_info "Install directory    : ${INSTALL_DIR}"
+    print_info "Physical source path : ${STORAGE_PATH}"
+    print_info "FUSE mount path      : ${FUSE_MOUNT}"
 }
 
 # ==============================================================================
-# [2/5] Plex Configuration
+# [2/3] Samba (optional)
 # ==============================================================================
-collect_plex() {
-    print_header "[2/5] Plex Configuration"
+collect_options() {
+    print_header "[2/3] Options"
 
-    ask       "Plex server URL"  "http://127.0.0.1:32400" PLEX_URL
-    ask_secret "Plex token (hidden)" PLEX_TOKEN
-
-    PLEX_LIBRARY_ID=0
-    PLEX_TV_LIBRARY_ID=0
-
-    # Auto-discover library sections if we have curl and a non-empty token
-    if [ -n "$PLEX_TOKEN" ] && command -v curl >/dev/null 2>&1; then
-        echo ""
-        print_info "Querying Plex for library sections..."
-        local sections_xml
-        if sections_xml=$(curl -sf --max-time 8 \
-                "${PLEX_URL}/library/sections?X-Plex-Token=${PLEX_TOKEN}" 2>/dev/null); then
-            # Parse XML with grep/sed: extract (key, title, type)
-            local parsed
-            parsed=$(echo "$sections_xml" | grep -oP '<Directory[^>]+key="([^"]+)"[^>]+type="([^"]+)"[^>]+title="([^"]+)"' | while IFS= read -r line; do
-                local key lib_type title
-                key=$(echo "$line" | grep -oP 'key="\K[^"]+')
-                lib_type=$(echo "$line" | grep -oP 'type="\K[^"]+')
-                title=$(echo "$line" | grep -oP 'title="\K[^"]+')
-                if [ "$lib_type" = "movie" ] || [ "$lib_type" = "show" ]; then
-                    echo "${key}:${title}:${lib_type}"
-                fi
-            done) || true
-
-            if [ -n "$parsed" ]; then
-                echo ""
-                echo "  Available Plex libraries:"
-                local i=1
-                local -a lib_keys lib_titles lib_types
-                while IFS= read -r line; do
-                    local key title lib_type
-                    key="${line%%:*}"
-                    rest="${line#*:}"
-                    lib_type="${rest##*:}"
-                    title="${rest%:*}"
-                    lib_keys+=("$key")
-                    lib_titles+=("$title")
-                    lib_types+=("$lib_type")
-                    printf "    %d) [%s] %s (%s)\n" "$i" "$key" "$title" "$lib_type"
-                    (( i++ )) || true
-                done <<< "$parsed"
-
-                echo ""
-                ask "Movies library number (0 to enter manually)" "0" _movies_choice
-                if [ "$_movies_choice" -gt 0 ] 2>/dev/null && \
-                   [ "$_movies_choice" -le "${#lib_keys[@]}" ] 2>/dev/null; then
-                    local idx=$(( _movies_choice - 1 ))
-                    PLEX_LIBRARY_ID="${lib_keys[$idx]}"
-                    print_ok "Movies library: ${lib_titles[$idx]} (ID: ${PLEX_LIBRARY_ID})"
-                else
-                    ask "Movies library ID (numeric)" "1" PLEX_LIBRARY_ID
-                fi
-
-                ask "TV library number (0 to enter manually, 0 if none)" "0" _tv_choice
-                if [ "$_tv_choice" -gt 0 ] 2>/dev/null && \
-                   [ "$_tv_choice" -le "${#lib_keys[@]}" ] 2>/dev/null; then
-                    local idx=$(( _tv_choice - 1 ))
-                    PLEX_TV_LIBRARY_ID="${lib_keys[$idx]}"
-                    print_ok "TV library: ${lib_titles[$idx]} (ID: ${PLEX_TV_LIBRARY_ID})"
-                else
-                    ask "TV library ID (numeric, 0 to skip)" "0" PLEX_TV_LIBRARY_ID
-                fi
-            else
-                print_warn "No movie/TV libraries found — entering manually."
-                ask "Movies library ID (numeric)" "1" PLEX_LIBRARY_ID
-                ask "TV library ID (numeric, 0 to skip)" "0" PLEX_TV_LIBRARY_ID
-            fi
-        else
-            print_warn "Could not reach Plex at ${PLEX_URL} — entering library IDs manually."
-            ask "Movies library ID (numeric)" "1" PLEX_LIBRARY_ID
-            ask "TV library ID (numeric, 0 to skip)" "0" PLEX_TV_LIBRARY_ID
-        fi
+    INSTALL_SAMBA=true
+    if ask_yn "Install and configure Samba?" "y"; then
+        INSTALL_SAMBA=true
+        print_ok "Samba will be installed and configured."
     else
-        if [ -z "$PLEX_TOKEN" ]; then
-            print_warn "No Plex token provided — skipping auto-discovery."
-        fi
-        ask "Movies library ID (numeric)" "1" PLEX_LIBRARY_ID
-        ask "TV library ID (numeric, 0 to skip)" "0" PLEX_TV_LIBRARY_ID
-    fi
-}
-
-# ==============================================================================
-# [3/5] External APIs
-# ==============================================================================
-collect_apis() {
-    print_header "[3/5] External APIs"
-
-    ask "TMDB API key (optional — leave empty to skip movie sync)" "" TMDB_API_KEY
-
-    if [ -z "$TMDB_API_KEY" ]; then
-        print_warn "No TMDB key entered. Movie sync (gostorm-sync-complete.py) will not function."
-    else
-        print_ok "TMDB API key set."
-    fi
-}
-
-# ==============================================================================
-# [4/5] Hardware & Network
-# ==============================================================================
-collect_hardware() {
-    print_header "[4/5] Hardware & Network"
-
-    ask "GOMEMLIMIT (MiB)  — 2200 is optimal for Pi 4 / 4GB" "2200" GOMEMLIMIT_MB
-
-    ask "Proxy listen port        (proxy_listen_port)" "8080" PROXY_PORT
-    ask "Metrics/dashboard port   (metrics_port)"      "9080" METRICS_PORT
-
-    # NAT-PMP
-    echo ""
-    NATPMP_ENABLED=false
-    NATPMP_GATEWAY=""
-    VPN_INTERFACE="wg0"
-
-    if ask_yn "Enable NAT-PMP (WireGuard port forwarding)?" "n"; then
-        NATPMP_ENABLED=true
-        ask "NAT-PMP gateway IP" "" NATPMP_GATEWAY
-        ask "VPN interface" "wg0" VPN_INTERFACE
-        print_ok "NAT-PMP enabled (gateway: ${NATPMP_GATEWAY}, interface: ${VPN_INTERFACE})"
-    else
-        print_info "NAT-PMP disabled."
-        echo ""
-        print_warn "Without NAT-PMP/WireGuard, all BitTorrent traffic (DHT, peer"
-        print_warn "connections, tracker queries) flows directly through your home"
-        print_warn "router. This can saturate the router's NAT connection-tracking"
-        print_warn "table, causing instability or reboots on some devices."
-        print_warn "Recommended: keep ConnectionsLimit <= 25 and enable WireGuard"
-        print_warn "on the Pi before running GoStream in production."
-        echo ""
+        INSTALL_SAMBA=false
+        print_info "Samba skipped. You will need to configure an alternative access method for the FUSE mount."
     fi
 }
 
@@ -388,178 +276,95 @@ collect_hardware() {
 # ------------------------------------------------------------------------------
 generate_config_json() {
     local output_path="${INSTALL_DIR}/config.json"
-
-    # Ensure INSTALL_DIR exists before writing anything
-    mkdir -p "${INSTALL_DIR}"
-
-    # Look for config.json.example: first in the repo (SCRIPT_DIR), then in INSTALL_DIR
-    local example_path
-    if [ -f "${SCRIPT_DIR}/config.json.example" ]; then
-        example_path="${SCRIPT_DIR}/config.json.example"
-    else
-        example_path="${INSTALL_DIR}/config.json.example"
-    fi
+    local example_path="${INSTALL_DIR}/config.json.example"
 
     print_info "Generating config.json..."
 
     if [ ! -f "$example_path" ]; then
-        print_warn "config.json.example not found — using built-in template."
-        example_path="${INSTALL_DIR}/config.json.example"
-        mkdir -p "${INSTALL_DIR}"
-        # Write the embedded template so the python script below can update it
-        cat > "$example_path" <<'TEMPLATE_EOF'
-{
-  "master_concurrency_limit": 25,
-  "read_ahead_budget_mb": 256,
-  "metadata_cache_size_mb": 50,
-  "write_buffer_size_kb": 64,
-  "read_buffer_size_kb": 1024,
-  "fuse_block_size_bytes": 1048576,
-  "streaming_threshold_kb": 128,
-  "log_level": "INFO",
-  "attr_timeout_seconds": 1,
-  "entry_timeout_seconds": 1,
-  "negative_timeout_seconds": 0,
-  "http_client_timeout_seconds": 30,
-  "max_retry_attempts": 6,
-  "retry_delay_ms": 500,
-  "rescue_grace_period_seconds": 240,
-  "rescue_cooldown_hours": 24,
-  "preload_workers_count": 4,
-  "preload_initial_delay_ms": 1000,
-  "warm_start_idle_seconds": 6,
-  "max_concurrent_prefetch": 3,
-  "cache_cleanup_interval_min": 5,
-  "max_cache_entries": 10000,
-  "gostorm_url": "http://127.0.0.1:8090",
-  "proxy_listen_port": 8080,
-  "metrics_port": 9080,
-  "blocklist_url": "https://github.com/Naunter/BT_BlockLists/raw/master/bt_blocklists.gz",
-  "physical_source_path": "/mnt/gostream-mkv-real",
-  "fuse_mount_path": "/mnt/gostream-mkv-virtual",
-  "disk_warmup_quota_gb": 12,
-  "warmup_head_size_mb": 64,
-  "natpmp": {
-    "enabled": false,
-    "gateway": "",
-    "local_port": 8091,
-    "vpn_interface": "wg0",
-    "lifetime": 60,
-    "refresh": 45
-  },
-  "plex": {
-    "url": "http://127.0.0.1:32400",
-    "token": "",
-    "library_id": 0,
-    "tv_library_id": 0
-  },
-  "tmdb_api_key": "",
-  "media_server_type": "plex",
-  "prowlarr": {
-    "enabled": false,
-    "api_key": "",
-    "url": ""
-  }
-}
-TEMPLATE_EOF
+        print_err "config.json.example not found — cannot generate config."
+        exit 1
     fi
 
-    # Use python3 to safely read JSON, update fields, and write output
-    python3 - <<PYEOF
-import json, sys
-
-example_path = "${example_path}"
-output_path  = "${output_path}"
-
-with open(example_path, 'r') as fh:
-    cfg = json.load(fh)
-
-# --- Paths ---
-cfg['physical_source_path'] = "${STORAGE_PATH}"
-cfg['fuse_mount_path']       = "${FUSE_MOUNT}"
-
-# --- Network ---
-cfg['proxy_listen_port'] = int("${PROXY_PORT}")
-cfg['metrics_port']      = int("${METRICS_PORT}")
-
-# --- Media Server ---
-cfg['media_server_type'] = "plex"
-
-# --- External APIs ---
-if "${TMDB_API_KEY}":
-    cfg['tmdb_api_key'] = "${TMDB_API_KEY}"
-
-# --- Plex block ---
-if 'plex' not in cfg or not isinstance(cfg.get('plex'), dict):
-    cfg['plex'] = {}
-cfg['plex']['url']        = "${PLEX_URL}"
-cfg['plex']['token']      = "${PLEX_TOKEN}"
-try:
-    cfg['plex']['library_id'] = int("${PLEX_LIBRARY_ID}")
-except ValueError:
-    cfg['plex']['library_id'] = 0
-try:
-    cfg['plex']['tv_library_id'] = int("${PLEX_TV_LIBRARY_ID}")
-except ValueError:
-    cfg['plex']['tv_library_id'] = 0
-
-# --- NAT-PMP block ---
-if 'natpmp' not in cfg or not isinstance(cfg.get('natpmp'), dict):
-    cfg['natpmp'] = {
-        "local_port": 8091,
-        "lifetime": 60,
-        "refresh": 45
-    }
-natpmp_enabled_str = "${NATPMP_ENABLED}"
-cfg['natpmp']['enabled']       = natpmp_enabled_str.lower() == 'true'
-cfg['natpmp']['gateway']       = "${NATPMP_GATEWAY}"
-cfg['natpmp']['vpn_interface'] = "${VPN_INTERFACE}"
-
-# --- Sync Scheduler ---
-if 'scheduler' not in cfg or not isinstance(cfg.get('scheduler'), dict):
-    cfg['scheduler'] = {
-        "enabled": True,
-        "movies_sync": {"enabled": True, "days_of_week": [1, 4], "hour": 3, "minute": 0},
-        "tv_sync": {"enabled": True, "days_of_week": [3, 5], "hour": 4, "minute": 0},
-        "watchlist_sync": {"enabled": True, "interval_hours": 1}
-    }
-
-# --- Quality Scoring ---
-if 'quality_scoring' not in cfg or not isinstance(cfg.get('quality_scoring'), dict):
-    cfg['quality_scoring'] = {
-        "movies": {
-            "res_4k": 200, "res_1080p": 50, "hdr": 60, "dolby_vision": 150,
-            "hdr10_plus": 100, "atmos": 50, "audio_5_1": 25, "stereo": -50,
-            "bluray": 10, "seeder_bonus": 5, "seeder_threshold": 50
-        },
-        "tv": {
-            "res_4k": 200, "res_1080p": 50, "hdr": 60, "dolby_vision": 150,
-            "hdr10_plus": 100, "atmos": 50, "audio_5_1": 25, "stereo": -50,
-            "bluray": 10, "seeder_bonus": 5, "seeder_threshold": 50,
-            "fullpack_bonus": 300
-        }
-    }
-
-with open(output_path, 'w') as fh:
-    json.dump(cfg, fh, indent=2)
-    fh.write('\n')
-
-print(f"  Written: {output_path}")
-PYEOF
+    # Copy the example and patch only the path fields with sed
+    cp "$example_path" "$output_path"
+    sed -i "s|\"physical_source_path\": \".*\"|\"physical_source_path\": \"${STORAGE_PATH}\"|" "$output_path"
+    sed -i "s|\"fuse_mount_path\": \".*\"|\"fuse_mount_path\": \"${FUSE_MOUNT}\"|" "$output_path"
 
     print_ok "config.json written to ${output_path}"
+    print_info "Configure Plex, TMDB, NAT-PMP, ports, and scheduler from the Control Panel at :9080/control"
 }
 
 # ------------------------------------------------------------------------------
-# 5a2. Deploy files from repo to INSTALL_DIR
+# 5a. Clone or use existing repo source
+# ------------------------------------------------------------------------------
+clone_repo() {
+    print_info "Preparing source in ${INSTALL_DIR}..."
+
+    # Check if this is already a cloned repo (main.go exists in SCRIPT_DIR)
+    if [ -f "${SCRIPT_DIR}/main.go" ]; then
+        # If INSTALL_DIR is inside SCRIPT_DIR (e.g. SCRIPT_DIR=/home/pi, INSTALL_DIR=/home/pi/GoStream),
+        # don't rsync the entire parent directory — clone fresh instead
+        case "${INSTALL_DIR}" in
+            "${SCRIPT_DIR}"/*)
+                print_info "Install directory is inside source directory — cloning fresh from GitHub..."
+                ;;
+            *)
+                if [ "$(realpath "${SCRIPT_DIR}")" != "$(realpath "${INSTALL_DIR}")" ]; then
+                    print_info "Copying source to ${INSTALL_DIR}..."
+                    rsync -a "${SCRIPT_DIR}/" "${INSTALL_DIR}/" --exclude='.git'
+                    print_ok "Source copied to ${INSTALL_DIR}"
+                    return 0
+                fi
+                print_ok "Source found in ${SCRIPT_DIR} — using existing clone."
+                return 0
+                ;;
+        esac
+    fi
+
+    # Clone from GitHub
+    local repo_url="https://github.com/MrRobotoGit/gostream.git"
+    local tmp_clone="/tmp/gostream-clone-$$"
+
+    print_info "Cloning source from GitHub..."
+    if command -v git >/dev/null 2>&1; then
+        git clone --depth 1 "$repo_url" "$tmp_clone"
+        mkdir -p "${INSTALL_DIR}"
+        rsync -a "${tmp_clone}/" "${INSTALL_DIR}/"
+        rm -rf "$tmp_clone"
+
+        # Remove committed Go module cache (causes go mod tidy errors)
+        if [ -d "${INSTALL_DIR}/go/pkg/mod" ]; then
+            rm -rf "${INSTALL_DIR}/go/pkg/mod"
+        fi
+
+        print_ok "Source cloned to ${INSTALL_DIR}"
+    else
+        print_err "git not found — cannot clone source."
+        exit 1
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# 5a2. Deploy config.json.example
 # ------------------------------------------------------------------------------
 deploy_files() {
     print_info "Deploying files to ${INSTALL_DIR}..."
 
-    # Copy config.json.example (useful reference for the user)
-    if [ -f "${SCRIPT_DIR}/config.json.example" ]; then
-        cp "${SCRIPT_DIR}/config.json.example" "${INSTALL_DIR}/config.json.example"
-        print_ok "config.json.example deployed to ${INSTALL_DIR}/"
+    # Ensure INSTALL_DIR exists
+    mkdir -p "${INSTALL_DIR}"
+
+    # config.json.example should already be in INSTALL_DIR from clone_repo
+    if [ -f "${INSTALL_DIR}/config.json.example" ]; then
+        print_ok "config.json.example present in ${INSTALL_DIR}/"
+    else
+        print_info "config.json.example not found — downloading from GitHub..."
+        local raw_url="https://raw.githubusercontent.com/MrRobotoGit/gostream/refs/heads/main/config.json.example"
+        if curl -sfL -o "${INSTALL_DIR}/config.json.example" "$raw_url"; then
+            print_ok "config.json.example downloaded from GitHub"
+        else
+            print_err "Failed to download config.json.example from GitHub."
+            exit 1
+        fi
     fi
 }
 
@@ -569,39 +374,32 @@ deploy_files() {
 create_directories() {
     print_info "Creating required directories..."
 
-    # Directories that belong to the system user (no sudo needed if running as that user)
-    local user_dirs=(
-        "${BASE_DIR}/STATE"
-        "${BASE_DIR}/logs"
+    # Directories inside INSTALL_DIR (user-writable)
+    local local_dirs=(
+        "${INSTALL_DIR}/STATE"
+        "${INSTALL_DIR}/logs"
     )
 
-    for d in "${user_dirs[@]}"; do
-        if mkdir -p "$d" 2>/dev/null; then
-            print_ok "Created: $d"
-        elif sudo mkdir -p "$d"; then
-            sudo chown "${SYSTEM_USER}:${SYSTEM_USER}" "$d"
-            print_ok "Created (sudo): $d"
-        else
-            print_err "Failed to create: $d"
-            exit 1
-        fi
+    for d in "${local_dirs[@]}"; do
+        mkdir -p "$d"
+        print_ok "Created: $d"
     done
 
-    # Directories under /mnt may require sudo
-    local root_dirs=(
+    # Data directories (MKV source + FUSE mount point — may need sudo)
+    local data_dirs=(
         "${STORAGE_PATH}/movies"
         "${STORAGE_PATH}/tv"
         "${FUSE_MOUNT}"
     )
 
-    for d in "${root_dirs[@]}"; do
+    for d in "${data_dirs[@]}"; do
         if mkdir -p "$d" 2>/dev/null; then
-            chown "${SYSTEM_USER}:${SYSTEM_USER}" "$d" 2>/dev/null || true
+            chown "${SYSTEM_USER}:${SYSTEM_GROUP}" "$d" 2>/dev/null || true
             print_ok "Created: $d"
         else
             print_info "Creating ${d} requires sudo..."
             sudo mkdir -p "$d"
-            sudo chown "${SYSTEM_USER}:${SYSTEM_USER}" "$d"
+            sudo chown "${SYSTEM_USER}:${SYSTEM_GROUP}" "$d"
             print_ok "Created (sudo): $d"
         fi
     done
@@ -613,22 +411,28 @@ create_directories() {
 install_services() {
     print_info "Installing systemd service files (requires sudo)..."
 
-    # -- gostream.service --
-    local wg_after=""
-    if [ "$NATPMP_ENABLED" = "true" ] && [ -n "$VPN_INTERFACE" ]; then
-        wg_after=" wg-quick@${VPN_INTERFACE}.service"
+    local samba_restart=""
+    if [ "$INSTALL_SAMBA" = "true" ]; then
+        samba_restart='
+# Allow gostream to stabilize, then restart Samba so it sees the FUSE mount
+ExecStartPost=/bin/sleep 2
+ExecStartPost=/usr/bin/sudo /bin/systemctl restart smbd'
+    else
+        samba_restart='
+# Allow gostream to stabilize
+ExecStartPost=/bin/sleep 2'
     fi
 
     sudo tee /etc/systemd/system/gostream.service > /dev/null <<SERVICE_EOF
 [Unit]
 Description=GoStream + GoStorm (Unified Streaming Engine)
-After=network-online.target systemd-resolved.service nss-lookup.target local-fs.target remote-fs.target${wg_after}
+After=network-online.target systemd-resolved.service nss-lookup.target local-fs.target remote-fs.target
 Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-# Memory tuning — GOMEMLIMIT=${GOMEMLIMIT_MB}MiB is optimal for Pi 4 / 4GB
-Environment=GOMEMLIMIT=${GOMEMLIMIT_MB}MiB
+# Memory tuning — GOMEMLIMIT=2200MiB is optimal for Pi 4 / 4GB
+Environment=GOMEMLIMIT=2200MiB
 Environment=GOGC=100
 
 Type=simple
@@ -645,11 +449,7 @@ ExecStartPre=-/usr/bin/${FUSERMOUNT_CMD} -uz ${FUSE_MOUNT}
 ExecStartPre=/bin/mkdir -p ${FUSE_MOUNT}
 
 # V1.4.6: Main binary — using --path . for true portability (STATE stays in WorkingDirectory)
-ExecStart=./gostream --path .
-
-# Allow gostream to stabilize, then restart Samba so it sees the FUSE mount
-ExecStartPost=/bin/sleep 2
-ExecStartPost=/usr/bin/sudo /bin/systemctl restart smbd
+ExecStart=${INSTALL_DIR}/gostream --path .${samba_restart}
 
 Restart=always
 RestartSec=10
@@ -775,7 +575,7 @@ compile_binary() {
     ensure_go
     ensure_swap
 
-    local src_dir="${SCRIPT_DIR}"
+    local src_dir="${INSTALL_DIR}"
     local out_bin="${INSTALL_DIR}/gostream"
 
     # Verify we have Go source files in the expected location
@@ -785,6 +585,11 @@ compile_binary() {
     fi
 
     cd "${src_dir}"
+
+    # Clean Go module cache if committed (causes go mod tidy errors with @version paths)
+    if [ -d "${src_dir}/go/pkg/mod" ]; then
+        rm -rf "${src_dir}/go/pkg/mod"
+    fi
 
     print_info "Running go mod tidy..."
     GOTOOLCHAIN=local "$GO_BIN" mod tidy
@@ -833,7 +638,7 @@ compile_binary() {
 verify_install() {
     print_info "Verifying installation (checking metrics endpoint)..."
 
-    local url="http://127.0.0.1:${METRICS_PORT}/metrics"
+    local url="http://127.0.0.1:9080/metrics"
     if command -v curl >/dev/null 2>&1; then
         if curl -sf --max-time 5 "$url" >/dev/null 2>&1; then
             print_ok "GoStream metrics endpoint is reachable at ${url}"
@@ -847,9 +652,14 @@ verify_install() {
 }
 
 # ------------------------------------------------------------------------------
-# 5i. Cron jobs for sync scripts (optional — built-in scheduler is preferred)
+# Sudoers entry so gostream.service can restart smbd without a password
 # ------------------------------------------------------------------------------
-setup_cron_jobs() {
+setup_sudoers() {
+    if [ "$INSTALL_SAMBA" != "true" ]; then
+        print_info "Samba not installed — skipping sudoers entry."
+        return 0
+    fi
+
     print_info "Configuring sudoers for smbd restart..."
 
     local sudoers_file="/etc/sudoers.d/gostream-smbd"
@@ -871,13 +681,6 @@ setup_cron_jobs() {
     fi
 }
 
-# ------------------------------------------------------------------------------
-# 5i. Cron jobs removed — use built-in scheduler from Control Panel
-# ------------------------------------------------------------------------------
-setup_cron_jobs() {
-    print_info "Built-in scheduler is enabled by default. Configure it from the Control Panel at :9080/control."
-}
-
 # ==============================================================================
 # Final summary
 # ==============================================================================
@@ -893,40 +696,39 @@ show_summary() {
     echo "  Service files installed:"
     echo "    /etc/systemd/system/gostream.service"
     echo ""
+
+    if [ "$INSTALL_SAMBA" = "true" ]; then
+        echo "${BOLD}Samba configuration:${NC}"
+        echo "  Edit /etc/samba/smb.conf and ensure your share has:"
+        echo "    oplocks = no"
+        echo "    aio read size = 1"
+        echo "    deadtime = 15"
+        echo "    vfs objects = fileid"
+        echo "  Then: ${YELLOW}sudo systemctl restart smbd${NC}"
+        echo ""
+    fi
+
     echo "${BOLD}Next steps:${NC}"
     echo ""
     echo "  1. Start the service:"
     echo "     ${YELLOW}sudo systemctl start gostream${NC}"
     echo ""
-    echo "  2. Configure Plex Webhook:"
-    echo "     Open Plex → Settings → Webhooks → Add:"
-    echo "     ${BOLD}http://<your-pi-ip>:${METRICS_PORT}/plex/webhook${NC}"
-    echo ""
-    echo "  3. Configure Samba (critical for stability):"
-    echo "     Edit /etc/samba/smb.conf and ensure your share has:"
-    echo "       oplocks = no"
-    echo "       aio read size = 1"
-    echo "       deadtime = 15"
-    echo "       vfs objects = fileid"
-    echo "     Then: ${YELLOW}sudo systemctl restart smbd${NC}"
-    echo ""
-    echo "  4. Check status:"
+    echo "  2. Check status:"
     echo "     ${YELLOW}sudo systemctl status gostream${NC}"
-    echo "     ${YELLOW}curl http://127.0.0.1:${METRICS_PORT}/metrics${NC}"
+    echo "     ${YELLOW}curl http://127.0.0.1:9080/metrics${NC}"
     echo ""
-    echo "  5. Dashboards:"
-    echo "     ${BOLD}http://<your-ip>:${METRICS_PORT}/control${NC}  (Control Panel + Scheduler)"
-    echo "     ${BOLD}http://<your-ip>:${METRICS_PORT}/dashboard${NC}  (Health Monitor)"
+    echo "  3. Configure everything from the Control Panel:"
+    echo "     ┌─────────────────────────────────────────────────────────┐"
+    echo "     │  Plex, TMDB, NAT-PMP, ports, scheduler, and more       │"
+    echo "     │  http://<your-ip>:9080/control                          │"
+    echo "     └─────────────────────────────────────────────────────────┘"
     echo ""
-    echo "  6. Trigger sync manually:"
-    echo "     ${YELLOW}curl -X POST http://127.0.0.1:${METRICS_PORT}/api/scheduler/movies/run${NC}  # Movies"
-    echo "     ${YELLOW}curl -X POST http://127.0.0.1:${METRICS_PORT}/api/scheduler/tv/run${NC}         # TV"
-    echo "     ${YELLOW}curl -X POST http://127.0.0.1:${METRICS_PORT}/api/scheduler/watchlist/run${NC}  # Watchlist"
+    echo "  4. Dashboards:"
+    echo "     ${BOLD}http://<your-ip>:9080/control${NC}    (Control Panel + Scheduler)"
+    echo "     ${BOLD}http://<your-ip>:9080/dashboard${NC}  (Health Monitor)"
     echo ""
-    echo "  7. Logs:"
-    echo "     ${YELLOW}tail -f ${BASE_DIR}/logs/gostream.log${NC}"
-    echo "     ${YELLOW}tail -f ${BASE_DIR}/logs/movies-sync.log${NC}"
-    echo "     ${YELLOW}tail -f ${BASE_DIR}/logs/tv-sync.log${NC}"
+    echo "  5. Logs:"
+    echo "     ${YELLOW}tail -f ${INSTALL_DIR}/logs/gostream.log${NC}"
     echo ""
 }
 
@@ -942,16 +744,19 @@ main() {
     # Note: FUSERMOUNT_CMD is set inside check_prerequisites
     FUSERMOUNT_CMD="fusermount3"
 
+    # Default: Samba enabled (can be overridden by collect_options)
+    INSTALL_SAMBA=true
+
     install_system_deps
     check_prerequisites
 
     collect_paths
-    collect_plex
-    collect_apis
-    collect_hardware
+    collect_options
 
-    print_header "[5/5] Installing"
+    print_header "[3/3] Installing"
 
+    clone_repo
+    echo ""
     deploy_files
     echo ""
     generate_config_json
@@ -967,8 +772,6 @@ main() {
     compile_binary
     echo ""
     verify_install
-    echo ""
-    setup_cron_jobs
 
     show_summary
 }
