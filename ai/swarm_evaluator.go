@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
 	"gostream/internal/gostorm/torr"
 	"gostream/internal/gostorm/torr/state"
@@ -68,9 +67,9 @@ func EvaluateSwarmQuality(provider AIProvider, torrent *torr.Torrent, stats *sta
 
 	eval.Sanitize()
 
-	recStr := eval.Recommendation
 	if eval.WillBuffer {
-		recStr = "⚠️ BUFFERING RISK"
+		log.Printf("[AI-Pilot] SwarmQuality: ⚠️ BUFFERING RISK — score=%d/100 recommendation=%s",
+			eval.QualityScore, eval.Recommendation)
 	}
 
 	log.Printf("[AI-Pilot] SwarmQuality: score=%d/100 will_buffer=%v recommendation=%s [Seeders:%d Peers:%d/%d Speed:%.1fMB/s Corruption:%.1f%% Progress:%.0f%%]",
@@ -81,9 +80,6 @@ func EvaluateSwarmQuality(provider AIProvider, torrent *torr.Torrent, stats *sta
 
 	if eval.WillBuffer && eval.Recommendation == "search_alternative" {
 		log.Printf("[AI-Pilot] SwarmQuality: ⚠️ Swarm predicted to buffer — searching alternative release recommended")
-		if provider.OnBadSwarm != nil {
-			provider.OnBadSwarm(torrent.Hash().String(), stats.Title)
-		}
 	}
 
 	return eval
