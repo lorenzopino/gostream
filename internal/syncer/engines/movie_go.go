@@ -636,9 +636,11 @@ func (e *MovieGoEngine) classifyMovieStream(s prowlarr.Stream) *MovieStream {
 		ceilingGB = prof.SizeCeilingGB["720p"]
 	}
 
+	// Check size floor/ceiling from profile
 	if ceilingGB > 0 && sizeGB != 0 && (sizeGB < floorGB || sizeGB > ceilingGB) {
 		return nil
 	}
+	// Reject unknown size only for 4K (unless it's a fallback scenario)
 	if ceilingGB > 0 && sizeGB == 0 && is4K && prof.Fallback4KMinSeeders == nil {
 		return nil
 	}
