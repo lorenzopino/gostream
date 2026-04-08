@@ -38,6 +38,8 @@ type WatchlistGoEngine struct {
 	sectionID  int
 	limiter    *rate.Limiter
 	logger     *log.Logger
+
+	qualityProfile quality.MovieProfile
 }
 
 // WatchlistConfig holds all config needed for the engine.
@@ -52,6 +54,7 @@ type WatchlistConfig struct {
 	MediaServerType string
 	LogsDir         string
 	ProwlarrCfg     prowlarr.ConfigProwlarr
+	QualityProfile  quality.MovieProfile
 }
 
 // NewWatchlistGoEngine creates a new Go watchlist sync engine.
@@ -66,18 +69,19 @@ func NewWatchlistGoEngine(cfg WatchlistConfig) *WatchlistGoEngine {
 	logger := log.New(io.MultiWriter(os.Stdout, logFile), "[WatchlistSync] ", log.LstdFlags)
 
 	return &WatchlistGoEngine{
-		gostorm:    NewGoStormClient(cfg.GoStormURL),
-		tmdb:       tmdb.NewClient(cfg.TMDBAPIKey),
-		torrentio:  torrentio.NewClient(cfg.TorrentioURL, "sort=qualitysize|qualityfilter=480p,720p,scr,cam"),
-		prowlarr:   prowlarrClient,
-		mediasrv:   mediaserver.New(cfg.MediaServerType, cfg.PlexURL, cfg.PlexToken),
-		httpClient: catalog.NewClient(20 * time.Second),
-		moviesDir:  cfg.MoviesDir,
-		plexURL:    cfg.PlexURL,
-		plexToken:  cfg.PlexToken,
-		sectionID:  cfg.PlexSection,
-		limiter:    rate.NewLimiter(rate.Every(500*time.Millisecond), 1),
-		logger:     logger,
+		gostorm:        NewGoStormClient(cfg.GoStormURL),
+		tmdb:           tmdb.NewClient(cfg.TMDBAPIKey),
+		torrentio:      torrentio.NewClient(cfg.TorrentioURL, "sort=qualitysize|qualityfilter=480p,720p,scr,cam"),
+		prowlarr:       prowlarrClient,
+		mediasrv:       mediaserver.New(cfg.MediaServerType, cfg.PlexURL, cfg.PlexToken),
+		httpClient:     catalog.NewClient(20 * time.Second),
+		moviesDir:      cfg.MoviesDir,
+		plexURL:        cfg.PlexURL,
+		plexToken:      cfg.PlexToken,
+		sectionID:      cfg.PlexSection,
+		limiter:        rate.NewLimiter(rate.Every(500*time.Millisecond), 1),
+		logger:         logger,
+		qualityProfile: cfg.QualityProfile,
 	}
 }
 

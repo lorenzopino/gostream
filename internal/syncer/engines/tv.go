@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"gostream/internal/catalog/tmdb"
 	"gostream/internal/metadb"
 	"gostream/internal/prowlarr"
+	"gostream/internal/syncer/quality"
 )
 
 // TVSyncer runs the TV sync in pure Go (Fase 3).
@@ -17,17 +19,19 @@ type TVSyncer struct {
 
 // TVSyncerConfig holds config for the Go TV engine.
 type TVSyncerConfig struct {
-	GoStormURL   string
-	TMDBAPIKey   string
-	TorrentioURL string
-	PlexURL      string
-	PlexToken    string
-	PlexTVLib    int
-	TVDir        string
-	StateDir     string
-	LogsDir      string
-	ProwlarrCfg  prowlarr.ConfigProwlarr
-	DB           *metadb.DB // V1.7.1: Optional SQLite backend
+	GoStormURL    string
+	TMDBAPIKey    string
+	TorrentioURL  string
+	PlexURL       string
+	PlexToken     string
+	PlexTVLib     int
+	TVDir         string
+	StateDir      string
+	LogsDir       string
+	ProwlarrCfg   prowlarr.ConfigProwlarr
+	DB            *metadb.DB // V1.7.1: Optional SQLite backend
+	QualityProfile  quality.TVProfile
+	TMDBDiscovery   tmdb.EndpointConfig
 }
 
 // NewTVSyncer creates a new Go-based TV syncer.
@@ -49,16 +53,18 @@ func NewTVSyncer(cfg TVSyncerConfig) *TVSyncer {
 	}
 
 	engineCfg := TVEngineConfig{
-		GoStormURL:   cfg.GoStormURL,
-		TMDBAPIKey:   cfg.TMDBAPIKey,
-		TorrentioURL: cfg.TorrentioURL,
-		PlexURL:      cfg.PlexURL,
-		PlexToken:    cfg.PlexToken,
-		PlexTVLib:    cfg.PlexTVLib,
-		TVDir:        tvDir,
-		StateDir:     stateDir,
-		LogsDir:      logsDir,
-		ProwlarrCfg:  cfg.ProwlarrCfg,
+		GoStormURL:     cfg.GoStormURL,
+		TMDBAPIKey:     cfg.TMDBAPIKey,
+		TorrentioURL:   cfg.TorrentioURL,
+		PlexURL:        cfg.PlexURL,
+		PlexToken:      cfg.PlexToken,
+		PlexTVLib:      cfg.PlexTVLib,
+		TVDir:          tvDir,
+		StateDir:       stateDir,
+		LogsDir:        logsDir,
+		ProwlarrCfg:    cfg.ProwlarrCfg,
+		QualityProfile: cfg.QualityProfile,
+		TMDBDiscovery:  cfg.TMDBDiscovery,
 	}
 
 	return &TVSyncer{

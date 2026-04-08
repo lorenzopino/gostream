@@ -22,6 +22,7 @@ import (
 	"gostream/internal/catalog/torrentio"
 	"gostream/internal/metadb"
 	"gostream/internal/prowlarr"
+	"gostream/internal/syncer/quality"
 )
 
 // TVGoEngine is the pure Go implementation of TV sync.
@@ -47,6 +48,9 @@ type TVGoEngine struct {
 
 	blacklist     BlacklistData
 	blacklistFile string
+
+	qualityProfile quality.TVProfile
+	tmdbDiscovery  tmdb.EndpointConfig
 }
 
 // TVEpisodeEntry is a single entry in the TV episode registry.
@@ -68,16 +72,18 @@ type TVSyncStats struct {
 
 // TVEngineConfig holds config for the TV engine.
 type TVEngineConfig struct {
-	GoStormURL   string
-	TMDBAPIKey   string
-	TorrentioURL string
-	PlexURL      string
-	PlexToken    string
-	PlexTVLib    int
-	TVDir        string
-	StateDir     string
-	LogsDir      string
-	ProwlarrCfg  prowlarr.ConfigProwlarr
+	GoStormURL    string
+	TMDBAPIKey    string
+	TorrentioURL  string
+	PlexURL       string
+	PlexToken     string
+	PlexTVLib     int
+	TVDir         string
+	StateDir      string
+	LogsDir       string
+	ProwlarrCfg   prowlarr.ConfigProwlarr
+	QualityProfile  quality.TVProfile
+	TMDBDiscovery   tmdb.EndpointConfig
 }
 
 // TV thresholds
@@ -162,6 +168,8 @@ func NewTVGoEngine(cfg TVEngineConfig, db *metadb.DB) *TVGoEngine {
 		db:               db,
 		processedThisRun: make(map[string]bool),
 		blacklistFile:    blFile,
+		qualityProfile:   cfg.QualityProfile,
+		tmdbDiscovery:    cfg.TMDBDiscovery,
 	}
 
 	e.registry = e.loadRegistry()
@@ -423,6 +431,14 @@ func (e *TVGoEngine) registerEpisode(key string, score int, hash, path, source s
 }
 
 func (e *TVGoEngine) discoverShows(ctx context.Context) ([]tmdb.TVShow, error) {
+	if len(e.tmdbDiscovery.Endpoints) > 0 {
+		return e.tmdb.DiscoverTVFromConfig(ctx, e.tmdbDiscovery)
+	}
+	return e.discoverShowsHardcoded(ctx)
+}
+
+// discoverShowsHardcoded is the original hardcoded TMDB discovery logic.
+func (e *TVGoEngine) discoverShowsHardcoded(ctx context.Context) ([]tmdb.TVShow, error) {
 	cutoff := time.Now().AddDate(0, 0, -tvMaxShowAgeDays).Format("2006-01-02")
 
 	var all []tmdb.TVShow

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"gostream/internal/prowlarr"
+	"gostream/internal/syncer/quality"
 )
 
 // WatchlistSyncer runs the watchlist sync in pure Go (Fase 2).
@@ -26,6 +27,7 @@ type WatchlistSyncerConfig struct {
 	MediaServerType string
 	LogsDir         string
 	ProwlarrCfg     prowlarr.ConfigProwlarr
+	QualityProfile  quality.MovieProfile
 }
 
 // NewWatchlistSyncer creates a new Go-based watchlist syncer.
@@ -43,16 +45,17 @@ func NewWatchlistSyncer(cfg WatchlistSyncerConfig) *WatchlistSyncer {
 	}
 
 	engineCfg := WatchlistConfig{
-		GoStormURL:      cfg.GoStormURL,
-		TMDBAPIKey:      cfg.TMDBAPIKey,
-		TorrentioURL:    cfg.TorrentioURL,
-		PlexURL:         cfg.PlexURL,
-		PlexToken:       cfg.PlexToken,
-		PlexSection:     cfg.PlexSection,
-		MoviesDir:       moviesDir,
+		GoStormURL:     cfg.GoStormURL,
+		TMDBAPIKey:     cfg.TMDBAPIKey,
+		TorrentioURL:   cfg.TorrentioURL,
+		PlexURL:        cfg.PlexURL,
+		PlexToken:      cfg.PlexToken,
+		PlexSection:    cfg.PlexSection,
+		MoviesDir:      moviesDir,
 		MediaServerType: cfg.MediaServerType,
-		LogsDir:         logsDir,
-		ProwlarrCfg:     cfg.ProwlarrCfg,
+		LogsDir:        logsDir,
+		ProwlarrCfg:    cfg.ProwlarrCfg,
+		QualityProfile: cfg.QualityProfile,
 	}
 
 	return &WatchlistSyncer{
