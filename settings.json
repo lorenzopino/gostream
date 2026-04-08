@@ -1,0 +1,33 @@
+{
+  "BitTorr": {
+    "AdaptiveShield": false,
+    "BlockListURL": "",
+    "CacheSize": 134217728,
+    "ConnectionsLimit": 25,
+    "DisableDHT": false,
+    "DisablePEX": false,
+    "DisableTCP": false,
+    "DisableUPNP": false,
+    "DisableUTP": false,
+    "DisableUpload": false,
+    "DownloadRateLimit": 0,
+    "EnableDebug": false,
+    "EnableIPv6": false,
+    "ForceEncrypt": false,
+    "PeersListenPort": 0,
+    "PreloadCache": 0,
+    "ReaderReadAHead": 75,
+    "RemoveCacheOnDrop": false,
+    "ResponsiveMode": true,
+    "RetrackersMode": 1,
+    "ShowFSActiveTorr": true,
+    "SslCert": "",
+    "SslKey": "",
+    "SslPort": 0,
+    "StoreSettingsInJson": true,
+    "TorrentDisconnectTimeout": 30,
+    "TorrentsSavePath": "",
+    "UploadRateLimit": 0,
+    "UseDisk": false
+  }
+}

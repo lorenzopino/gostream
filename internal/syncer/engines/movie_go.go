@@ -335,7 +335,11 @@ func (e *MovieGoEngine) buildExistingMovieIndex() (map[string]movieFile, map[str
 		if imdb == "" {
 			return nil
 		}
-		score := e.calculateMovieScore(info.Name(), 0, 0, reM4K.MatchString(info.Name()))
+		name := info.Name()
+		is4K := reM4K.MatchString(name)
+		is1080p := reM1080p.MatchString(name) && !reM720p.MatchString(name)
+		is720p := reM720p.MatchString(name) && !is1080p && !is4K
+		score := e.calculateMovieScore(name, 0, 0, is4K, is1080p, is720p)
 		if existing, ok := index[imdb]; !ok || score > existing.score {
 			index[imdb] = movieFile{path: path, imdb: imdb, score: score}
 		}
@@ -476,6 +480,8 @@ type MovieStream struct {
 	Title        string
 	Hash         string
 	Is4K         bool
+	Is1080p      bool
+	Is720p       bool
 	QualityScore int
 	Seeders      int
 	SizeGB       float64
@@ -509,40 +515,67 @@ func (e *MovieGoEngine) getMovieStreams(ctx context.Context, imdbID, title strin
 }
 
 func (e *MovieGoEngine) filterMovieStreams(streams []prowlarr.Stream) []MovieStream {
-	// Pass 1: 4K
-	var pass4K []MovieStream
-	for _, s := range streams {
-		c := e.classifyMovieStream(s)
-		if c == nil || !c.Is4K {
-			continue
-		}
-		pass4K = append(pass4K, *c)
-	}
-	if len(pass4K) > 0 {
-		sort.Slice(pass4K, func(i, j int) bool {
-			return pass4K[i].QualityScore > pass4K[j].QualityScore
-		})
-		return pass4K
+	prof := e.qualityProfile
+	priorityOrder := prof.PriorityOrder
+	if len(priorityOrder) == 0 {
+		priorityOrder = []string{"4k", "1080p", "720p"}
 	}
 
-	// Pass 2: 1080p
-	var pass1080 []MovieStream
-	for _, s := range streams {
-		c := e.classifyMovieStream(s)
-		if c == nil || c.Is4K {
-			continue
+	// Try each resolution in priority order; first match wins
+	for _, res := range priorityOrder {
+		var candidates []MovieStream
+		for _, s := range streams {
+			c := e.classifyMovieStream(s)
+			if c == nil {
+				continue
+			}
+			// Match resolution to current priority pass
+			match := false
+			switch res {
+			case "4k":
+				match = c.Is4K
+			case "1080p":
+				match = c.Is1080p && !c.Is4K
+			case "720p":
+				match = c.Is720p && !c.Is4K && !c.Is1080p
+			}
+			if !match {
+				continue
+			}
+			candidates = append(candidates, *c)
 		}
-		pass1080 = append(pass1080, *c)
+		if len(candidates) > 0 {
+			sort.Slice(candidates, func(i, j int) bool {
+				return candidates[i].QualityScore > candidates[j].QualityScore
+			})
+			return candidates
+		}
 	}
-	sort.Slice(pass1080, func(i, j int) bool {
-		return pass1080[i].QualityScore > pass1080[j].QualityScore
-	})
-	return pass1080
+
+	// 4K fallback if configured (when 4K wasn't in priority_order or nothing matched)
+	if prof.Fallback4KMinSeeders != nil {
+		var fallback []MovieStream
+		for _, s := range streams {
+			c := e.classifyMovieStream(s)
+			if c != nil && c.Is4K && c.Seeders >= *prof.Fallback4KMinSeeders {
+				fallback = append(fallback, *c)
+			}
+		}
+		if len(fallback) > 0 {
+			sort.Slice(fallback, func(i, j int) bool {
+				return fallback[i].SizeGB < fallback[j].SizeGB
+			})
+			return fallback
+		}
+	}
+
+	return nil
 }
 
 func (e *MovieGoEngine) classifyMovieStream(s prowlarr.Stream) *MovieStream {
 	title := s.Title
 	fullText := title + " " + s.Name
+	prof := e.qualityProfile
 
 	if reMGarbage.MatchString(fullText) {
 		return nil
@@ -558,31 +591,59 @@ func (e *MovieGoEngine) classifyMovieStream(s prowlarr.Stream) *MovieStream {
 	}
 
 	seeders := e.extractMovieSeeders(title)
-	if seeders < mMovieMinSeeders {
+	minSeeders := 15 // fallback default
+	if prof.MinSeeders != nil {
+		minSeeders = *prof.MinSeeders
+	}
+	if seeders < minSeeders {
 		return nil
 	}
 
 	is4K := reM4K.MatchString(fullText)
 	is1080p := reM1080p.MatchString(fullText) && !reM720p.MatchString(fullText)
+	is720p := reM720p.MatchString(fullText) && !is1080p && !is4K
 
-	if !is4K && !is1080p {
+	// Check include flags from profile (nil means use default=true)
+	include4K := prof.Include4K == nil || *prof.Include4K
+	include1080p := prof.Include1080p == nil || *prof.Include1080p
+	include720p := prof.Include720p == nil || *prof.Include720p
+	if is4K && !include4K {
+		return nil
+	}
+	if is1080p && !include1080p {
+		return nil
+	}
+	if is720p && !include720p {
+		return nil
+	}
+
+	if !is4K && !is1080p && !is720p {
 		return nil
 	}
 
 	sizeGB := e.extractMovieSizeGB(title)
 
-	// 4K: accept unknown size with penalty; 1080p: reject unknown
+	// Check size floor/ceiling from profile
+	var floorGB, ceilingGB float64
 	if is4K {
-		if sizeGB != 0 && (sizeGB < mMovie4KMinGB || sizeGB > mMovie4KMaxGB) {
-			return nil
-		}
+		floorGB = prof.SizeFloorGB["4k"]
+		ceilingGB = prof.SizeCeilingGB["4k"]
+	} else if is1080p {
+		floorGB = prof.SizeFloorGB["1080p"]
+		ceilingGB = prof.SizeCeilingGB["1080p"]
 	} else {
-		if sizeGB == 0 || sizeGB < mMovie1080PMinGB || sizeGB > mMovie1080PMaxGB {
-			return nil
-		}
+		floorGB = prof.SizeFloorGB["720p"]
+		ceilingGB = prof.SizeCeilingGB["720p"]
 	}
 
-	score := e.calculateMovieScore(fullText, seeders, sizeGB, is4K)
+	if ceilingGB > 0 && sizeGB != 0 && (sizeGB < floorGB || sizeGB > ceilingGB) {
+		return nil
+	}
+	if ceilingGB > 0 && sizeGB == 0 && is4K && prof.Fallback4KMinSeeders == nil {
+		return nil
+	}
+
+	score := e.calculateMovieScore(fullText, seeders, sizeGB, is4K, is1080p, is720p)
 	if score <= 0 {
 		return nil
 	}
@@ -591,54 +652,70 @@ func (e *MovieGoEngine) classifyMovieStream(s prowlarr.Stream) *MovieStream {
 		Title:        title,
 		Hash:         strings.ToLower(s.InfoHash),
 		Is4K:         is4K,
+		Is1080p:      is1080p,
+		Is720p:       is720p,
 		QualityScore: score,
 		Seeders:      seeders,
 		SizeGB:       sizeGB,
 	}
 }
 
-func (e *MovieGoEngine) calculateMovieScore(text string, seeders int, sizeGB float64, is4K bool) int {
+func (e *MovieGoEngine) calculateMovieScore(text string, seeders int, sizeGB float64, is4K, is1080p, is720p bool) int {
+	w := e.qualityProfile.ScoreWeights
 	score := 0
 
-	if is4K {
-		score += mMovie4KBase
-	} else {
-		score += mMovie1080pBase
+	// Resolution score
+	if is4K && w.Resolution4K != nil {
+		score += *w.Resolution4K
+	} else if is1080p && w.Resolution1080p != nil {
+		score += *w.Resolution1080p
+	} else if is720p && w.Resolution720p != nil {
+		score += *w.Resolution720p
 	}
 
-	if reMDV.MatchString(text) {
-		score += mMovieDVBonus
-	} else if reMHDR.MatchString(text) {
-		score += mMovieHDRBonus
+	// HDR / Dolby Vision
+	if reMDV.MatchString(text) && w.DolbyVision != nil {
+		score += *w.DolbyVision
+	} else if reMHDR.MatchString(text) && w.HDR != nil {
+		score += *w.HDR
 	}
 
-	if reMAtmos.MatchString(text) {
-		score += mMovieAtmosBonus
-	} else if reM51.MatchString(text) {
-		score += mMovie51Bonus
-	} else if reMStereo.MatchString(text) {
-		score += mMovieStereoPenalty
-	} else {
-		score += 5
+	// Audio
+	if reMAtmos.MatchString(text) && w.Atmos != nil {
+		score += *w.Atmos
+	} else if reM51.MatchString(text) && w.Audio51 != nil {
+		score += *w.Audio51
+	} else if reMStereo.MatchString(text) && w.AudioStereo != nil {
+		score += *w.AudioStereo
+	} else if w.AudioStereo == nil {
+		score += 5 // default neutral bonus when not configured
 	}
 
-	if reMRemux.MatchString(text) {
-		score += mMovieRemuxBonus
+	// Remux (usually veto at -500)
+	if reMRemux.MatchString(text) && w.Remux != nil {
+		score += *w.Remux
 	}
 
-	if reMITA.MatchString(text) {
-		score += mMovieITABonus
+	// Italian language
+	if reMITA.MatchString(text) && w.ITA != nil {
+		score += *w.ITA
 	}
 
-	if sizeGB == 0 && is4K {
-		score += mMovieUnknownPenalty
+	// Unknown size penalty for 4K
+	if sizeGB == 0 && is4K && w.UnknownSizePenalty != nil {
+		score += *w.UnknownSizePenalty
 	}
 
-	seederBonus := seeders
-	if seederBonus > 50 {
-		seederBonus = 50
+	// Seeder bonus (capped at threshold)
+	if w.SeederBonus != nil && w.SeederThreshold != nil {
+		if seeders > *w.SeederThreshold {
+			bonus := seeders
+			if bonus > 50 {
+				bonus = 50
+			}
+			score += bonus * (*w.SeederBonus) / 5
+		}
 	}
-	score += seederBonus
 
 	return score
 }
