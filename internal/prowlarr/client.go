@@ -50,9 +50,9 @@ func (c *Client) FetchTorrents(imdbID, contentType, title string, categories []s
 	return c.mapToStremioFormat(results)
 }
 
-// DefaultMovieCategories returns the default categories for quality-first movie search.
+// DefaultMovieCategories returns the default categories for movie search.
 func DefaultMovieCategories() []string {
-	return []string{"2040", "2045"} // HD + UHD
+	return []string{"2040"} // HD only (720p + 1080p)
 }
 
 // SizeFirstMovieCategories returns categories for size-first movie search.
@@ -77,7 +77,7 @@ func (c *Client) fetchFromProwlarr(imdbID, contentType, title string, categories
 	// Default categories if none specified
 	if len(categories) == 0 {
 		if contentType == "series" {
-			categories = []string{"5040"}
+			categories = []string{"5040"} // TV HD only
 		} else {
 			categories = DefaultMovieCategories()
 		}
