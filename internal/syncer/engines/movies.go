@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"gostream/internal/catalog/tmdb"
 	"gostream/internal/prowlarr"
+	"gostream/internal/syncer/quality"
 )
 
 // MoviesSyncer runs the movie sync in pure Go (Fase 4).
@@ -26,6 +28,8 @@ type MoviesSyncerConfig struct {
 	StateDir     string
 	LogsDir      string
 	ProwlarrCfg  prowlarr.ConfigProwlarr
+	QualityProfile  quality.MovieProfile
+	TMDBDiscovery   tmdb.EndpointConfig
 }
 
 // NewMoviesSyncer creates a new Go-based movie syncer.
@@ -57,6 +61,8 @@ func NewMoviesSyncer(cfg MoviesSyncerConfig) *MoviesSyncer {
 		StateDir:     stateDir,
 		LogsDir:      logsDir,
 		ProwlarrCfg:  cfg.ProwlarrCfg,
+		QualityProfile: cfg.QualityProfile,
+		TMDBDiscovery:  cfg.TMDBDiscovery,
 	}
 
 	return &MoviesSyncer{

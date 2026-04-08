@@ -37,3 +37,4 @@ docker-windows/my-deploy/
 # Local installer/testing artifacts
 docker-windows/test/
 .sisyphus/
+.gitnexus

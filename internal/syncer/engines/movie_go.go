@@ -21,6 +21,7 @@ import (
 	"gostream/internal/catalog/tmdb"
 	"gostream/internal/catalog/torrentio"
 	"gostream/internal/prowlarr"
+	"gostream/internal/syncer/quality"
 )
 
 // MovieGoEngine is the pure Go implementation of movie sync.
@@ -36,6 +37,10 @@ type MovieGoEngine struct {
 	stateDir  string
 	limiter   *rate.Limiter
 	logger    *log.Logger
+
+	// Config-driven quality and discovery
+	qualityProfile quality.MovieProfile
+	tmdbDiscovery  tmdb.EndpointConfig
 
 	// Negative caches
 	noMKVCache     map[string]CacheEntry
@@ -85,6 +90,8 @@ type MovieEngineConfig struct {
 	StateDir     string
 	LogsDir      string
 	ProwlarrCfg  prowlarr.ConfigProwlarr
+	QualityProfile  quality.MovieProfile
+	TMDBDiscovery   tmdb.EndpointConfig
 }
 
 // Movie thresholds
@@ -161,6 +168,9 @@ func NewMovieGoEngine(cfg MovieEngineConfig) *MovieGoEngine {
 		limiter:   rate.NewLimiter(rate.Every(250*time.Millisecond), 1),
 		logger:    logger,
 
+		qualityProfile: cfg.QualityProfile,
+		tmdbDiscovery:  cfg.TMDBDiscovery,
+
 		noMKVCFile:     filepath.Join(cfg.StateDir, "no_mkv_hashes.json"),
 		noStreamsCFile: filepath.Join(cfg.StateDir, "movie_no_streams_cache.json"),
 		recheckCFile:   filepath.Join(cfg.StateDir, "movie_recheck_cache.json"),
@@ -228,6 +238,13 @@ func (e *MovieGoEngine) Run(ctx context.Context) error {
 }
 
 func (e *MovieGoEngine) discoverMovies(ctx context.Context) ([]tmdb.Movie, error) {
+	if len(e.tmdbDiscovery.Endpoints) > 0 {
+		return e.tmdb.DiscoverMoviesFromConfig(ctx, e.tmdbDiscovery)
+	}
+	return e.discoverMoviesHardcoded(ctx)
+}
+
+func (e *MovieGoEngine) discoverMoviesHardcoded(ctx context.Context) ([]tmdb.Movie, error) {
 	cutoff := time.Now().AddDate(0, -6, 0).Format("2006-01-02")
 	currentYear := time.Now().Year() + 1
 	dateLTE := fmt.Sprintf("%d-12-31", currentYear)
