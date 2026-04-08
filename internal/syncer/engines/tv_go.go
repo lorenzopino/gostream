@@ -663,7 +663,7 @@ func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, 
 	// Prowlarr primary
 	if e.prowlarr != nil {
 		tp := time.Now()
-		streams := e.prowlarr.FetchTorrents(imdbID, "series", showName)
+		streams := e.prowlarr.FetchTorrents(imdbID, "series", showName, nil)
 		for _, s := range streams {
 			h := strings.ToLower(s.InfoHash)
 			if h != "" && !seenHashes[h] {

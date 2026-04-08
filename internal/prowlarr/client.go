@@ -40,19 +40,29 @@ func NewClient(cfg ConfigProwlarr) *Client {
 
 // FetchTorrents queries Prowlarr and returns Stremio-format streams.
 // contentType is "movie" or "series". title is the show/movie name (used for TV UHD searches).
+// categories is a slice of Newznab category IDs to search. If empty, defaults are used.
 // Returns an empty slice (never nil) if disabled or on error.
-func (c *Client) FetchTorrents(imdbID, contentType, title string) []Stream {
+func (c *Client) FetchTorrents(imdbID, contentType, title string, categories []string) []Stream {
 	if c == nil {
 		return []Stream{}
 	}
-	results := c.fetchFromProwlarr(imdbID, contentType, title)
+	results := c.fetchFromProwlarr(imdbID, contentType, title, categories)
 	return c.mapToStremioFormat(results)
 }
 
-// fetchFromProwlarr executes the dual-strategy API query in parallel and merges results by infoHash.
-// Movies: HD (2040) + UHD (2045) — parallel
-// TV: HD by imdbID (5040) + All by title (5000) — parallel when title is set
-func (c *Client) fetchFromProwlarr(imdbID, contentType, title string) []ProwlarrResult {
+// DefaultMovieCategories returns the default categories for quality-first movie search.
+func DefaultMovieCategories() []string {
+	return []string{"2040", "2045"} // HD + UHD
+}
+
+// SizeFirstMovieCategories returns categories for size-first movie search.
+// Queries SD, x265, WEB-DL, and HD in parallel to maximize small-file discovery.
+func SizeFirstMovieCategories() []string {
+	return []string{"2030", "2090", "2080", "2040"} // SD + x265 + WEB-DL + HD
+}
+
+// fetchFromProwlarr executes the API queries and merges results by infoHash.
+func (c *Client) fetchFromProwlarr(imdbID, contentType, title string, categories []string) []ProwlarrResult {
 	prowlarrType := "movie"
 	if contentType == "series" {
 		prowlarrType = "tvsearch"
@@ -64,6 +74,15 @@ func (c *Client) fetchFromProwlarr(imdbID, contentType, title string) []Prowlarr
 		"indexerIds": "-2",
 	}
 
+	// Default categories if none specified
+	if len(categories) == 0 {
+		if contentType == "series" {
+			categories = []string{"5040"}
+		} else {
+			categories = DefaultMovieCategories()
+		}
+	}
+
 	type result struct {
 		items []ProwlarrResult
 		idx   int
@@ -73,23 +92,22 @@ func (c *Client) fetchFromProwlarr(imdbID, contentType, title string) []Prowlarr
 	if contentType == "series" {
 		queries = append(queries, mergeParams(baseParams, map[string]string{
 			"query":      imdbID,
-			"categories": "5040",
+			"categories": categories[0],
 		}))
-		if title != "" {
+		if title != "" && len(categories) > 1 {
 			queries = append(queries, mergeParams(baseParams, map[string]string{
 				"query":      title,
-				"categories": "5000",
+				"categories": categories[1],
 			}))
 		}
 	} else {
-		queries = append(queries, mergeParams(baseParams, map[string]string{
-			"query":      imdbID,
-			"categories": "2040",
-		}))
-		queries = append(queries, mergeParams(baseParams, map[string]string{
-			"query":      imdbID,
-			"categories": "2045",
-		}))
+		// For movies: query each category in parallel
+		for _, cat := range categories {
+			queries = append(queries, mergeParams(baseParams, map[string]string{
+				"query":      imdbID,
+				"categories": cat,
+			}))
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)

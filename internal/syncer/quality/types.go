@@ -84,8 +84,8 @@ func DefaultSizeFirstMovies() MovieProfile {
 	return MovieProfile{
 		Include4K: ptr(true), Include1080p: ptr(true), Include720p: ptr(true),
 		SizeFloorGB:   map[string]float64{"720p": 0.5, "1080p": 0.8, "4k": 1},
-		SizeCeilingGB: map[string]float64{"720p": 3, "1080p": 5, "4k": 8},
-		MinSeeders:           ptr(15),
+		SizeCeilingGB: map[string]float64{"720p": 3, "1080p": 10, "4k": 15},
+		MinSeeders:           ptr(10),
 		Fallback4KMinSeeders: ptr(50),
 		PriorityOrder:        []string{"720p", "1080p", "4k"},
 		ScoreWeights: MovieScoreWeights{

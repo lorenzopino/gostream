@@ -30,6 +30,7 @@ type MoviesSyncerConfig struct {
 	ProwlarrCfg  prowlarr.ConfigProwlarr
 	QualityProfile  quality.MovieProfile
 	TMDBDiscovery   tmdb.EndpointConfig
+	ProwlarrCategories []string
 }
 
 // NewMoviesSyncer creates a new Go-based movie syncer.
@@ -63,6 +64,7 @@ func NewMoviesSyncer(cfg MoviesSyncerConfig) *MoviesSyncer {
 		ProwlarrCfg:  cfg.ProwlarrCfg,
 		QualityProfile: cfg.QualityProfile,
 		TMDBDiscovery:  cfg.TMDBDiscovery,
+		ProwlarrCategories: cfg.ProwlarrCategories,
 	}
 
 	return &MoviesSyncer{

@@ -39,8 +39,9 @@ type MovieGoEngine struct {
 	logger    *log.Logger
 
 	// Config-driven quality and discovery
-	qualityProfile quality.MovieProfile
-	tmdbDiscovery  tmdb.EndpointConfig
+	qualityProfile     quality.MovieProfile
+	tmdbDiscovery      tmdb.EndpointConfig
+	prowlarrCategories []string
 
 	// Negative caches
 	noMKVCache     map[string]CacheEntry
@@ -89,9 +90,10 @@ type MovieEngineConfig struct {
 	MoviesDir    string
 	StateDir     string
 	LogsDir      string
-	ProwlarrCfg  prowlarr.ConfigProwlarr
+	ProwlarrCfg     prowlarr.ConfigProwlarr
 	QualityProfile  quality.MovieProfile
 	TMDBDiscovery   tmdb.EndpointConfig
+	ProwlarrCategories []string
 }
 
 // Movie thresholds
@@ -168,8 +170,9 @@ func NewMovieGoEngine(cfg MovieEngineConfig) *MovieGoEngine {
 		limiter:   rate.NewLimiter(rate.Every(250*time.Millisecond), 1),
 		logger:    logger,
 
-		qualityProfile: cfg.QualityProfile,
-		tmdbDiscovery:  cfg.TMDBDiscovery,
+		qualityProfile:     cfg.QualityProfile,
+		tmdbDiscovery:      cfg.TMDBDiscovery,
+		prowlarrCategories: cfg.ProwlarrCategories,
 
 		noMKVCFile:     filepath.Join(cfg.StateDir, "no_mkv_hashes.json"),
 		noStreamsCFile: filepath.Join(cfg.StateDir, "movie_no_streams_cache.json"),
@@ -490,7 +493,7 @@ type MovieStream struct {
 func (e *MovieGoEngine) getMovieStreams(ctx context.Context, imdbID, title string) ([]prowlarr.Stream, error) {
 	// Prowlarr first
 	if e.prowlarr != nil {
-		streams := e.prowlarr.FetchTorrents(imdbID, "movie", title)
+		streams := e.prowlarr.FetchTorrents(imdbID, "movie", title, e.prowlarrCategories)
 		if len(streams) > 0 {
 			return streams, nil
 		}

@@ -367,7 +367,7 @@ func (e *WatchlistGoEngine) isAlreadyPresent(item WatchlistItem, imdbSet map[str
 
 func (e *WatchlistGoEngine) getStreams(ctx context.Context, imdbID, title string) ([]prowlarr.Stream, error) {
 	if e.prowlarr != nil {
-		streams := e.prowlarr.FetchTorrents(imdbID, "movie", title)
+		streams := e.prowlarr.FetchTorrents(imdbID, "movie", title, nil)
 		if len(streams) > 0 {
 			return streams, nil
 		}

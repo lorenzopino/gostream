@@ -180,10 +180,10 @@ func parseStream(raw json.RawMessage) (Stream, error) {
 }
 
 // FetchWithProwlarr fetches streams from Prowlarr first, falling back to Torrentio.
-func FetchWithProwlarr(ctx context.Context, prowlarrClient *prowlarr.Client, torrentioClient *Client, imdbID, contentType, title string) ([]prowlarr.Stream, error) {
+func FetchWithProwlarr(ctx context.Context, prowlarrClient *prowlarr.Client, torrentioClient *Client, imdbID, contentType, title string, categories []string) ([]prowlarr.Stream, error) {
 	// Primary: Prowlarr
 	if prowlarrClient != nil {
-		streams := prowlarrClient.FetchTorrents(imdbID, contentType, title)
+		streams := prowlarrClient.FetchTorrents(imdbID, contentType, title, categories)
 		if len(streams) > 0 {
 			return streams, nil
 		}

@@ -2723,6 +2723,17 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 }
 
+// prowlarrCategoriesForProfile returns the Prowlarr category IDs to use based on the quality profile.
+func prowlarrCategoriesForProfile(profile quality.MovieProfile) []string {
+	// If 720p is included in the profile, use size-first categories
+	// (SD, x265, WEB-DL, HD) to maximize small-file discovery.
+	if profile.Include720p != nil && *profile.Include720p {
+		return prowlarr.SizeFirstMovieCategories()
+	}
+	// Otherwise, use HD + UHD only (quality-first).
+	return prowlarr.DefaultMovieCategories()
+}
+
 //go:embed settings.html
 var settingsHTML []byte
 
@@ -3090,7 +3101,7 @@ func main() {
 		if contentType == "" {
 			contentType = "movie"
 		}
-		streams := prowlarrClient.FetchTorrents(imdbID, contentType, title)
+		streams := prowlarrClient.FetchTorrents(imdbID, contentType, title, nil)
 		if streams == nil {
 			streams = []prowlarr.Stream{}
 		}
@@ -3148,6 +3159,7 @@ func main() {
 				ProwlarrCfg:    globalConfig.Prowlarr,
 				QualityProfile: quality.ResolveMovieProfile(globalConfig.Quality),
 				TMDBDiscovery:  quality.TMDBEndpointGroupFromConfig(safeTMDBGroup(globalConfig.TMDBDiscovery.Movies)),
+				ProwlarrCategories: prowlarrCategoriesForProfile(quality.ResolveMovieProfile(globalConfig.Quality)),
 			}),
 			"tv": engines.NewTVSyncer(engines.TVSyncerConfig{
 				GoStormURL:     globalConfig.GoStormBaseURL,
