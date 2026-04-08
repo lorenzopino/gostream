@@ -15,8 +15,8 @@ func TestDefaultProfilesAreValid(t *testing.T) {
 			if tt.prof.PriorityOrder == nil || len(tt.prof.PriorityOrder) == 0 {
 				t.Error("PriorityOrder must not be empty")
 			}
-			if tt.prof.MinSeeders <= 0 {
-				t.Errorf("MinSeeders must be > 0, got %d", tt.prof.MinSeeders)
+			if tt.prof.MinSeeders == nil || *tt.prof.MinSeeders <= 0 {
+				t.Errorf("MinSeeders must be > 0, got %v", tt.prof.MinSeeders)
 			}
 		})
 	}
@@ -35,8 +35,8 @@ func TestDefaultTVProfilesAreValid(t *testing.T) {
 			if tt.prof.PriorityOrder == nil || len(tt.prof.PriorityOrder) == 0 {
 				t.Error("PriorityOrder must not be empty")
 			}
-			if tt.prof.FullpackBonus < 0 {
-				t.Errorf("FullpackBonus must be >= 0, got %d", tt.prof.FullpackBonus)
+			if tt.prof.FullpackBonus == nil || *tt.prof.FullpackBonus < 0 {
+				t.Errorf("FullpackBonus must be >= 0, got %v", tt.prof.FullpackBonus)
 			}
 		})
 	}
@@ -96,8 +96,8 @@ func TestTVProfileMinSeeders4K(t *testing.T) {
 	}
 	for _, tp := range profiles {
 		t.Run(tp.name, func(t *testing.T) {
-			if tp.prof.MinSeeders4K <= 0 {
-				t.Errorf("MinSeeders4K must be > 0 for TV profile %s, got %d", tp.name, tp.prof.MinSeeders4K)
+			if tp.prof.MinSeeders4K == nil || *tp.prof.MinSeeders4K <= 0 {
+				t.Errorf("MinSeeders4K must be > 0 for TV profile %s, got %v", tp.name, tp.prof.MinSeeders4K)
 			}
 		})
 	}
@@ -126,10 +126,10 @@ func TestRemuxPenaltyIsNegative(t *testing.T) {
 func TestResolveMovies_NoConfig(t *testing.T) {
 	var qc *QualityConfig
 	prof := qc.ResolveMovies()
-	if prof.MinSeeders != 15 {
-		t.Errorf("expected MinSeeders=15, got %d", prof.MinSeeders)
+	if prof.MinSeeders == nil || *prof.MinSeeders != 15 {
+		t.Errorf("expected MinSeeders=15, got %v", prof.MinSeeders)
 	}
-	if prof.Include720p {
+	if prof.Include720p != nil && *prof.Include720p {
 		t.Error("quality-first should not include 720p by default")
 	}
 }
@@ -137,7 +137,7 @@ func TestResolveMovies_NoConfig(t *testing.T) {
 func TestResolveMovies_SizeFirst(t *testing.T) {
 	qc := &QualityConfig{Profile: "size-first"}
 	prof := qc.ResolveMovies()
-	if !prof.Include720p {
+	if prof.Include720p == nil || !*prof.Include720p {
 		t.Error("size-first should include 720p")
 	}
 	if prof.PriorityOrder[0] != "720p" {
@@ -151,16 +151,36 @@ func TestResolveMovies_CustomOverrides(t *testing.T) {
 		Profile: "size-first",
 		Profiles: map[string]ProfileSet{
 			"size-first": {
-				Movies: &MovieProfile{MinSeeders: minSeeders},
+				Movies: &MovieProfile{MinSeeders: &minSeeders},
 			},
 		},
 	}
 	prof := qc.ResolveMovies()
-	if prof.MinSeeders != 25 {
-		t.Errorf("expected MinSeeders=25 (custom override), got %d", prof.MinSeeders)
+	if prof.MinSeeders == nil || *prof.MinSeeders != 25 {
+		t.Errorf("expected MinSeeders=25 (custom override), got %v", prof.MinSeeders)
 	}
 	// Other fields should come from default
-	if !prof.Include720p {
+	if prof.Include720p == nil || !*prof.Include720p {
+		t.Error("custom override should preserve default Include720p")
+	}
+}
+
+func TestResolveMovies_OverrideBoolToFalse(t *testing.T) {
+	include4K := false
+	qc := &QualityConfig{
+		Profile: "size-first",
+		Profiles: map[string]ProfileSet{
+			"size-first": {
+				Movies: &MovieProfile{Include4K: &include4K},
+			},
+		},
+	}
+	prof := qc.ResolveMovies()
+	if prof.Include4K == nil || *prof.Include4K {
+		t.Error("custom Include4K=false should override size-first default")
+	}
+	// Other fields should still come from default
+	if prof.Include720p == nil || !*prof.Include720p {
 		t.Error("custom override should preserve default Include720p")
 	}
 }

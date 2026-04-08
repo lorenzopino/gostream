@@ -61,12 +61,12 @@ func defaultProfileByNameTV(name string) TVProfile {
 // mergeMovieProfile fills nil pointer fields in custom with values from defaults.
 func mergeMovieProfile(custom, def MovieProfile) MovieProfile {
 	result := def
-	if custom.Include4K { result.Include4K = custom.Include4K }
-	if custom.Include1080p { result.Include1080p = custom.Include1080p }
-	if custom.Include720p { result.Include720p = custom.Include720p }
+	if custom.Include4K != nil { result.Include4K = custom.Include4K }
+	if custom.Include1080p != nil { result.Include1080p = custom.Include1080p }
+	if custom.Include720p != nil { result.Include720p = custom.Include720p }
 	if len(custom.SizeFloorGB) > 0 { result.SizeFloorGB = custom.SizeFloorGB }
 	if len(custom.SizeCeilingGB) > 0 { result.SizeCeilingGB = custom.SizeCeilingGB }
-	if custom.MinSeeders > 0 { result.MinSeeders = custom.MinSeeders }
+	if custom.MinSeeders != nil { result.MinSeeders = custom.MinSeeders }
 	if custom.Fallback4KMinSeeders != nil { result.Fallback4KMinSeeders = custom.Fallback4KMinSeeders }
 	if len(custom.PriorityOrder) > 0 { result.PriorityOrder = custom.PriorityOrder }
 	mergeMovieWeights(&result.ScoreWeights, &custom.ScoreWeights)
@@ -93,14 +93,14 @@ func mergeMovieWeights(result, custom *MovieScoreWeights) {
 
 func mergeTVProfile(custom, def TVProfile) TVProfile {
 	result := def
-	if custom.Include4K { result.Include4K = true }
-	if custom.Include1080p { result.Include1080p = true }
-	if custom.Include720p { result.Include720p = true }
+	if custom.Include4K != nil { result.Include4K = custom.Include4K }
+	if custom.Include1080p != nil { result.Include1080p = custom.Include1080p }
+	if custom.Include720p != nil { result.Include720p = custom.Include720p }
 	if len(custom.SizeFloorGB) > 0 { result.SizeFloorGB = custom.SizeFloorGB }
 	if len(custom.SizeCeilingGB) > 0 { result.SizeCeilingGB = custom.SizeCeilingGB }
-	if custom.MinSeeders4K > 0 { result.MinSeeders4K = custom.MinSeeders4K }
-	if custom.MinSeeders > 0 { result.MinSeeders = custom.MinSeeders }
-	if custom.FullpackBonus != 0 { result.FullpackBonus = custom.FullpackBonus }
+	if custom.MinSeeders4K != nil { result.MinSeeders4K = custom.MinSeeders4K }
+	if custom.MinSeeders != nil { result.MinSeeders = custom.MinSeeders }
+	if custom.FullpackBonus != nil { result.FullpackBonus = custom.FullpackBonus }
 	if len(custom.PriorityOrder) > 0 { result.PriorityOrder = custom.PriorityOrder }
 	mergeTVWeights(&result.ScoreWeights, &custom.ScoreWeights)
 	return result

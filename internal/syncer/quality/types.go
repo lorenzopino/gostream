@@ -2,12 +2,12 @@ package quality
 
 // MovieProfile holds all configurable quality parameters for movie torrent selection.
 type MovieProfile struct {
-	Include4K            bool               `json:"include_4k"`
-	Include1080p         bool               `json:"include_1080p"`
-	Include720p          bool               `json:"include_720p"`
+	Include4K            *bool              `json:"include_4k"`
+	Include1080p         *bool              `json:"include_1080p"`
+	Include720p          *bool              `json:"include_720p"`
 	SizeFloorGB          map[string]float64 `json:"size_floor_gb,omitempty"`  // keys: "720p", "1080p", "4k"
 	SizeCeilingGB        map[string]float64 `json:"size_ceiling_gb,omitempty"` // keys: "720p", "1080p", "4k"
-	MinSeeders           int                `json:"min_seeders"`
+	MinSeeders           *int               `json:"min_seeders"`
 	Fallback4KMinSeeders *int               `json:"fallback_4k_min_seeders,omitempty"` // nil = 4K not fallback
 	PriorityOrder        []string           `json:"priority_order"`                    // ["720p", "1080p", "4k"]
 	ScoreWeights         MovieScoreWeights  `json:"score_weights"`
@@ -34,14 +34,14 @@ type MovieScoreWeights struct {
 
 // TVProfile holds all configurable quality parameters for TV torrent selection.
 type TVProfile struct {
-	Include4K       bool               `json:"include_4k"`
-	Include1080p    bool               `json:"include_1080p"`
-	Include720p     bool               `json:"include_720p"`
+	Include4K       *bool              `json:"include_4k"`
+	Include1080p    *bool              `json:"include_1080p"`
+	Include720p     *bool              `json:"include_720p"`
 	SizeFloorGB     map[string]float64 `json:"size_floor_gb,omitempty"`
 	SizeCeilingGB   map[string]float64 `json:"size_ceiling_gb,omitempty"`
-	MinSeeders4K    int                `json:"min_seeders_4k"`
-	MinSeeders      int                `json:"min_seeders"`
-	FullpackBonus   int                `json:"fullpack_bonus"`
+	MinSeeders4K    *int               `json:"min_seeders_4k"`
+	MinSeeders      *int               `json:"min_seeders"`
+	FullpackBonus   *int               `json:"fullpack_bonus"`
 	PriorityOrder   []string           `json:"priority_order"`
 	ScoreWeights    TVScoreWeights     `json:"score_weights"`
 }
@@ -63,10 +63,10 @@ type TVScoreWeights struct {
 // DefaultQualityFirstMovies returns the "quality-first" movie profile (matches current hardcoded behavior).
 func DefaultQualityFirstMovies() MovieProfile {
 	return MovieProfile{
-		Include4K: true, Include1080p: true, Include720p: false,
+		Include4K: ptr(true), Include1080p: ptr(true), Include720p: ptr(false),
 		SizeFloorGB:   map[string]float64{"4k": 10, "1080p": 4},
 		SizeCeilingGB: map[string]float64{"4k": 60, "1080p": 20},
-		MinSeeders:           15,
+		MinSeeders:           ptr(15),
 		Fallback4KMinSeeders: nil,
 		PriorityOrder:        []string{"4k", "1080p", "720p"},
 		ScoreWeights: MovieScoreWeights{
@@ -82,10 +82,10 @@ func DefaultQualityFirstMovies() MovieProfile {
 // DefaultSizeFirstMovies returns the "size-first" movie profile.
 func DefaultSizeFirstMovies() MovieProfile {
 	return MovieProfile{
-		Include4K: true, Include1080p: true, Include720p: true,
+		Include4K: ptr(true), Include1080p: ptr(true), Include720p: ptr(true),
 		SizeFloorGB:   map[string]float64{"720p": 0.5, "1080p": 0.8, "4k": 1},
 		SizeCeilingGB: map[string]float64{"720p": 3, "1080p": 5, "4k": 8},
-		MinSeeders:           15,
+		MinSeeders:           ptr(15),
 		Fallback4KMinSeeders: ptr(50),
 		PriorityOrder:        []string{"720p", "1080p", "4k"},
 		ScoreWeights: MovieScoreWeights{
@@ -101,10 +101,10 @@ func DefaultSizeFirstMovies() MovieProfile {
 // DefaultQualityFirstTV returns the "quality-first" TV profile.
 func DefaultQualityFirstTV() TVProfile {
 	return TVProfile{
-		Include4K: true, Include1080p: true, Include720p: false,
+		Include4K: ptr(true), Include1080p: ptr(true), Include720p: ptr(false),
 		SizeFloorGB:   map[string]float64{"4k": 10, "1080p": 1},
 		SizeCeilingGB: map[string]float64{"4k": 30, "1080p": 30},
-		MinSeeders4K: 10, MinSeeders: 5, FullpackBonus: 500,
+		MinSeeders4K: ptr(10), MinSeeders: ptr(5), FullpackBonus: ptr(500),
 		PriorityOrder: []string{"4k", "1080p", "720p"},
 		ScoreWeights: TVScoreWeights{
 			Resolution4K: ptr(200), Resolution1080p: ptr(50),
@@ -117,10 +117,10 @@ func DefaultQualityFirstTV() TVProfile {
 // DefaultSizeFirstTV returns the "size-first" TV profile.
 func DefaultSizeFirstTV() TVProfile {
 	return TVProfile{
-		Include4K: true, Include1080p: true, Include720p: true,
+		Include4K: ptr(true), Include1080p: ptr(true), Include720p: ptr(true),
 		SizeFloorGB:   map[string]float64{"720p": 0.3, "1080p": 0.5, "4k": 0.5},
 		SizeCeilingGB: map[string]float64{"720p": 1, "1080p": 2, "4k": 3},
-		MinSeeders4K: 50, MinSeeders: 10, FullpackBonus: 300,
+		MinSeeders4K: ptr(50), MinSeeders: ptr(10), FullpackBonus: ptr(300),
 		PriorityOrder: []string{"720p", "1080p", "4k"},
 		ScoreWeights: TVScoreWeights{
 			Resolution720p: ptr(500), Resolution1080p: ptr(300), Resolution4K: ptr(100),
