@@ -122,3 +122,45 @@ func TestRemuxPenaltyIsNegative(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveMovies_NoConfig(t *testing.T) {
+	var qc *QualityConfig
+	prof := qc.ResolveMovies()
+	if prof.MinSeeders != 15 {
+		t.Errorf("expected MinSeeders=15, got %d", prof.MinSeeders)
+	}
+	if prof.Include720p {
+		t.Error("quality-first should not include 720p by default")
+	}
+}
+
+func TestResolveMovies_SizeFirst(t *testing.T) {
+	qc := &QualityConfig{Profile: "size-first"}
+	prof := qc.ResolveMovies()
+	if !prof.Include720p {
+		t.Error("size-first should include 720p")
+	}
+	if prof.PriorityOrder[0] != "720p" {
+		t.Errorf("expected priority_order[0]=720p, got %s", prof.PriorityOrder[0])
+	}
+}
+
+func TestResolveMovies_CustomOverrides(t *testing.T) {
+	minSeeders := 25
+	qc := &QualityConfig{
+		Profile: "size-first",
+		Profiles: map[string]ProfileSet{
+			"size-first": {
+				Movies: &MovieProfile{MinSeeders: minSeeders},
+			},
+		},
+	}
+	prof := qc.ResolveMovies()
+	if prof.MinSeeders != 25 {
+		t.Errorf("expected MinSeeders=25 (custom override), got %d", prof.MinSeeders)
+	}
+	// Other fields should come from default
+	if !prof.Include720p {
+		t.Error("custom override should preserve default Include720p")
+	}
+}
