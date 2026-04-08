@@ -47,7 +47,7 @@ Entrambi devono essere modificabili via `config.json` senza ricompilare.
             "audio_5_1": 25,
             "audio_stereo": -50,
             "bluray": 10,
-            "remux": 30,
+            "remux": -500,
             "ita": 60,
             "seeder_bonus": 5,
             "seeder_threshold": 50,
@@ -83,8 +83,8 @@ Entrambi devono essere modificabili via `config.json` senza ricompilare.
           "include_4k": true,
           "include_1080p": true,
           "include_720p": true,
-          "size_floor_gb": { "720p": 1, "1080p": 2, "4k": 10 },
-          "size_ceiling_gb": { "720p": 5, "1080p": 5, "4k": 15 },
+          "size_floor_gb": { "720p": 0.5, "1080p": 0.8, "4k": 1 },
+          "size_ceiling_gb": { "720p": 3, "1080p": 5, "4k": 8 },
           "min_seeders": 15,
           "fallback_4k_min_seeders": 50,
           "priority_order": ["720p", "1080p", "4k"],
@@ -99,7 +99,7 @@ Entrambi devono essere modificabili via `config.json` senza ricompilare.
             "audio_5_1": 15,
             "audio_stereo": 10,
             "bluray": 5,
-            "remux": 20,
+            "remux": -500,
             "ita": 60,
             "seeder_bonus": 5,
             "seeder_threshold": 30,
@@ -110,8 +110,8 @@ Entrambi devono essere modificabili via `config.json` senza ricompilare.
           "include_4k": true,
           "include_1080p": true,
           "include_720p": true,
-          "size_floor_gb": { "720p": 0.5, "1080p": 1, "4k": 5 },
-          "size_ceiling_gb": { "720p": 2, "1080p": 2, "4k": 15 },
+          "size_floor_gb": { "720p": 0.3, "1080p": 0.5, "4k": 0.5 },
+          "size_ceiling_gb": { "720p": 1, "1080p": 2, "4k": 3 },
           "min_seeders_4k": 50,
           "min_seeders": 10,
           "fullpack_bonus": 300,
@@ -375,6 +375,8 @@ reTV720p = regexp.MustCompile(`(?i)720p`)
 
 ### 2.2 Struct Go (`config.go`)
 
+**Parametri obbligatori per ogni endpoint:** `name`, `enabled`, `type`. Tutti gli altri campi sono `*T` (pointer) con tag `omitempty` — se omessi o null, il parametro **non viene aggiunto alla query URL** e TMDB applica i suoi default server-side.
+
 ```go
 type TMDBDiscoveryConfig struct {
     Movies *TMDBEndpointGroup `json:"movies,omitempty"`
@@ -475,6 +477,35 @@ func (c *Client) DiscoverTVFromConfig(ctx context.Context, cfg TMDBEndpointGroup
 Se `tmdb_discovery` non è presente nel config:
 - Il TMDB client usa i metodi attuali (comportamento invariato)
 - Oppure: default equivalente agli endpoint attuali (stesso risultato)
+
+### 2.6 Scheduling e On-Demand
+
+**Scheduled:** Gli engine di discovery girano già all'interno del `Run()` dei sync engine, che sono orchestrati dallo scheduler esistente (`SchedulerConfig` in `config.go`). Nessun cambiamento al cron — la discovery configurabile viene semplicemente iniettata dentro `discoverMovies()` e `discoverShows()`.
+
+**On-demand:** L'interfaccia Control Panel esistente a `:9080/dashboard` ha già bottoni per sync manuali. Aggiungiamo:
+- "Run Movie Discovery Now" — esegue solo la fase discovery dei film (senza ri-processare i torrent già presenti)
+- "Run TV Discovery Now" — esegue solo la fase discovery delle serie TV
+- Entrambi triggerano `discoverMovies()` / `discoverShows()` via HTTP POST a nuovi endpoint REST
+
+### 2.7 Web UI per Editing
+
+La `settings.html` esistente va estesa con:
+
+**Sezione Quality Profile:**
+- Dropdown per selezionare il profilo attivo (`quality-first` / `size-first`)
+- Tabella editabile dei pesi (`score_weights`) per movies e TV
+- Checkbox per `include_4k`, `include_1080p`, `include_720p`
+- Input numerici per `size_floor_gb`, `size_ceiling_gb`, `min_seeders`
+- Pulsante "Save & Apply" → scrive `config.json` e hot-reload dei profile negli engine
+
+**Sezione TMDB Discovery:**
+- Lista di endpoint con toggle on/off
+- Form espandibile per ogni endpoint con tutti i parametri
+- Validazione client-side: range check su voti, date, enum validation per sort_by/release_type/status/type
+- Pulsante "Add Endpoint" per aggiungere nuovi endpoint
+- Drag & drop per riordinare la lista
+- Pulsante "Save & Apply" → scrive `config.json`
+- Pulsante "Run Discovery Now" per trigger on-demand
 
 ---
 
