@@ -438,6 +438,13 @@ type TMDBEndpoint struct {
 
 ### 2.3 Modifiche al TMDB Client (`tmdb/client.go`)
 
+**Comportamento: sostituzione, non aggiunta.**
+La configurazione `tmdb_discovery` **sostituisce completamente** gli endpoint hardcoded attuali:
+- Se `tmdb_discovery` è presente e ha `endpoints` → usa **SOLO** quelli configurati. I default hardcoded NON vengono eseguiti.
+- Se `tmdb_discovery` è assente o `endpoints` è vuoto → usa i metodi attuali (backward compatible, comportamento identico).
+
+Questo significa che se l'utente vuole mantenere alcuni discovery attuali e aggiungerne di nuovi, deve esplicitarli **tutti** nella lista `endpoints`.
+
 **Nuovi metodi:**
 
 ```go
