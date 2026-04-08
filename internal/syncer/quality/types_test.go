@@ -41,3 +41,84 @@ func TestDefaultTVProfilesAreValid(t *testing.T) {
 		})
 	}
 }
+
+func TestSizeFloorNotExceedCeiling(t *testing.T) {
+	movieProfiles := []struct {
+		name string
+		prof MovieProfile
+	}{
+		{"quality-first-movies", DefaultQualityFirstMovies()},
+		{"size-first-movies", DefaultSizeFirstMovies()},
+	}
+	for _, mp := range movieProfiles {
+		t.Run(mp.name, func(t *testing.T) {
+			for res, floor := range mp.prof.SizeFloorGB {
+				ceiling, ok := mp.prof.SizeCeilingGB[res]
+				if !ok {
+					continue
+				}
+				if floor > ceiling {
+					t.Errorf("SizeFloorGB[%q]=%.1f exceeds SizeCeilingGB[%q]=%.1f", res, floor, res, ceiling)
+				}
+			}
+		})
+	}
+
+	tvProfiles := []struct {
+		name string
+		prof TVProfile
+	}{
+		{"quality-first-tv", DefaultQualityFirstTV()},
+		{"size-first-tv", DefaultSizeFirstTV()},
+	}
+	for _, tp := range tvProfiles {
+		t.Run(tp.name, func(t *testing.T) {
+			for res, floor := range tp.prof.SizeFloorGB {
+				ceiling, ok := tp.prof.SizeCeilingGB[res]
+				if !ok {
+					continue
+				}
+				if floor > ceiling {
+					t.Errorf("SizeFloorGB[%q]=%.1f exceeds SizeCeilingGB[%q]=%.1f", res, floor, res, ceiling)
+				}
+			}
+		})
+	}
+}
+
+func TestTVProfileMinSeeders4K(t *testing.T) {
+	profiles := []struct {
+		name string
+		prof TVProfile
+	}{
+		{"quality-first", DefaultQualityFirstTV()},
+		{"size-first", DefaultSizeFirstTV()},
+	}
+	for _, tp := range profiles {
+		t.Run(tp.name, func(t *testing.T) {
+			if tp.prof.MinSeeders4K <= 0 {
+				t.Errorf("MinSeeders4K must be > 0 for TV profile %s, got %d", tp.name, tp.prof.MinSeeders4K)
+			}
+		})
+	}
+}
+
+func TestRemuxPenaltyIsNegative(t *testing.T) {
+	profiles := []struct {
+		name string
+		prof MovieProfile
+	}{
+		{"quality-first", DefaultQualityFirstMovies()},
+		{"size-first", DefaultSizeFirstMovies()},
+	}
+	for _, mp := range profiles {
+		t.Run(mp.name, func(t *testing.T) {
+			if mp.prof.ScoreWeights.Remux == nil {
+				t.Fatal("Remux weight must not be nil")
+			}
+			if *mp.prof.ScoreWeights.Remux >= 0 {
+				t.Errorf("Remux penalty must be negative (intentional exclusion), got %d", *mp.prof.ScoreWeights.Remux)
+			}
+		})
+	}
+}

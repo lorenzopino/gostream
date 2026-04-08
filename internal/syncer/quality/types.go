@@ -25,7 +25,7 @@ type MovieScoreWeights struct {
 	Audio51            *int `json:"audio_5_1,omitempty"`
 	AudioStereo        *int `json:"audio_stereo,omitempty"`
 	BluRay             *int `json:"bluray,omitempty"`
-	Remux              *int `json:"remux,omitempty"`
+	Remux              *int `json:"remux,omitempty"` // -500 is an intentional hard veto to exclude remux releases
 	ITA                *int `json:"ita,omitempty"`
 	SeederBonus        *int `json:"seeder_bonus,omitempty"`
 	SeederThreshold    *int `json:"seeder_threshold,omitempty"`
@@ -81,13 +81,12 @@ func DefaultQualityFirstMovies() MovieProfile {
 
 // DefaultSizeFirstMovies returns the "size-first" movie profile.
 func DefaultSizeFirstMovies() MovieProfile {
-	v50 := 50
 	return MovieProfile{
 		Include4K: true, Include1080p: true, Include720p: true,
 		SizeFloorGB:   map[string]float64{"720p": 0.5, "1080p": 0.8, "4k": 1},
 		SizeCeilingGB: map[string]float64{"720p": 3, "1080p": 5, "4k": 8},
 		MinSeeders:           15,
-		Fallback4KMinSeeders: &v50,
+		Fallback4KMinSeeders: ptr(50),
 		PriorityOrder:        []string{"720p", "1080p", "4k"},
 		ScoreWeights: MovieScoreWeights{
 			Resolution720p: ptr(500), Resolution1080p: ptr(300), Resolution4K: ptr(100),
@@ -117,12 +116,11 @@ func DefaultQualityFirstTV() TVProfile {
 
 // DefaultSizeFirstTV returns the "size-first" TV profile.
 func DefaultSizeFirstTV() TVProfile {
-	v50 := 50
 	return TVProfile{
 		Include4K: true, Include1080p: true, Include720p: true,
 		SizeFloorGB:   map[string]float64{"720p": 0.3, "1080p": 0.5, "4k": 0.5},
 		SizeCeilingGB: map[string]float64{"720p": 1, "1080p": 2, "4k": 3},
-		MinSeeders4K: v50, MinSeeders: 10, FullpackBonus: 300,
+		MinSeeders4K: 50, MinSeeders: 10, FullpackBonus: 300,
 		PriorityOrder: []string{"720p", "1080p", "4k"},
 		ScoreWeights: TVScoreWeights{
 			Resolution720p: ptr(500), Resolution1080p: ptr(300), Resolution4K: ptr(100),
@@ -132,4 +130,5 @@ func DefaultSizeFirstTV() TVProfile {
 	}
 }
 
+// ptr returns a pointer to v, allowing inline pointer literals in struct composite expressions.
 func ptr[T any](v T) *T { return &v }
