@@ -20,7 +20,9 @@ import (
 	"gostream/internal/monitor/dashboard"
 	"gostream/internal/opentracker"
 	"gostream/internal/prowlarr"
+	"gostream/internal/config"
 	"gostream/internal/syncer/engines"
+	"gostream/internal/syncer/quality"
 	"gostream/internal/syncer/scheduler"
 	"gostream/internal/updater"
 	"io"
@@ -45,6 +47,15 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 )
+
+// safeTMDBGroup dereferences a possibly-nil TMDBEndpointGroup pointer, returning
+// an empty but valid config when nil so the quality converter handles it gracefully.
+func safeTMDBGroup(g *config.TMDBEndpointGroup) config.TMDBEndpointGroup {
+	if g == nil {
+		return config.TMDBEndpointGroup{}
+	}
+	return *g
+}
 
 // --- CONFIGURAZIONE (V71-Zero-Latency) ---
 // Note: Configuration is now handled entirely by config.go via globalConfig
@@ -3125,29 +3136,33 @@ func main() {
 
 		syncers := map[string]scheduler.Syncer{
 			"movies": engines.NewMoviesSyncer(engines.MoviesSyncerConfig{
-				GoStormURL:   globalConfig.GoStormBaseURL,
-				TMDBAPIKey:   globalConfig.TMDBAPIKey,
-				TorrentioURL: globalConfig.TorrentioURL,
-				PlexURL:      globalConfig.Plex.URL,
-				PlexToken:    globalConfig.Plex.Token,
-				PlexLib:      globalConfig.Plex.LibraryID,
-				MoviesDir:    filepath.Join(globalConfig.PhysicalSourcePath, "movies"),
-				StateDir:     GetStateDir(),
-				LogsDir:      logsDir,
-				ProwlarrCfg:  globalConfig.Prowlarr,
+				GoStormURL:     globalConfig.GoStormBaseURL,
+				TMDBAPIKey:     globalConfig.TMDBAPIKey,
+				TorrentioURL:   globalConfig.TorrentioURL,
+				PlexURL:        globalConfig.Plex.URL,
+				PlexToken:      globalConfig.Plex.Token,
+				PlexLib:        globalConfig.Plex.LibraryID,
+				MoviesDir:      filepath.Join(globalConfig.PhysicalSourcePath, "movies"),
+				StateDir:       GetStateDir(),
+				LogsDir:        logsDir,
+				ProwlarrCfg:    globalConfig.Prowlarr,
+				QualityProfile: quality.ResolveMovieProfile(globalConfig.Quality),
+				TMDBDiscovery:  quality.TMDBEndpointGroupFromConfig(safeTMDBGroup(globalConfig.TMDBDiscovery.Movies)),
 			}),
 			"tv": engines.NewTVSyncer(engines.TVSyncerConfig{
-				GoStormURL:   globalConfig.GoStormBaseURL,
-				TMDBAPIKey:   globalConfig.TMDBAPIKey,
-				TorrentioURL: globalConfig.TorrentioURL,
-				PlexURL:      globalConfig.Plex.URL,
-				PlexToken:    globalConfig.Plex.Token,
-				PlexTVLib:    globalConfig.Plex.TVLibraryID,
-				TVDir:        filepath.Join(globalConfig.PhysicalSourcePath, "tv"),
-				StateDir:     GetStateDir(),
-				LogsDir:      logsDir,
-				ProwlarrCfg:  globalConfig.Prowlarr,
-				DB:           stateDB,
+				GoStormURL:     globalConfig.GoStormBaseURL,
+				TMDBAPIKey:     globalConfig.TMDBAPIKey,
+				TorrentioURL:   globalConfig.TorrentioURL,
+				PlexURL:        globalConfig.Plex.URL,
+				PlexToken:      globalConfig.Plex.Token,
+				PlexTVLib:      globalConfig.Plex.TVLibraryID,
+				TVDir:          filepath.Join(globalConfig.PhysicalSourcePath, "tv"),
+				StateDir:       GetStateDir(),
+				LogsDir:        logsDir,
+				ProwlarrCfg:    globalConfig.Prowlarr,
+				DB:             stateDB,
+				QualityProfile: quality.ResolveTVProfile(globalConfig.Quality),
+				TMDBDiscovery:  quality.TMDBEndpointGroupFromConfig(safeTMDBGroup(globalConfig.TMDBDiscovery.TV)),
 			}),
 			"watchlist": engines.NewWatchlistSyncer(engines.WatchlistSyncerConfig{
 				GoStormURL:      globalConfig.GoStormBaseURL,
@@ -3160,6 +3175,7 @@ func main() {
 				MediaServerType: globalConfig.MediaServerType,
 				LogsDir:         logsDir,
 				ProwlarrCfg:     globalConfig.Prowlarr,
+				QualityProfile:  quality.ResolveMovieProfile(globalConfig.Quality),
 			}),
 		}
 

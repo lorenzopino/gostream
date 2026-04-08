@@ -42,5 +42,16 @@
     "token": "",
     "library_id": 0
   },
-  "tmdb_api_key": ""
+  "tmdb_api_key": "",
+  "quality": {
+    "profile": "quality-first"
+  },
+  "tmdb_discovery": {
+    "movies": {
+      "endpoints": []
+    },
+    "tv": {
+      "endpoints": []
+    }
+  }
 }
