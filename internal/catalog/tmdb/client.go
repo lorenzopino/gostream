@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -14,6 +16,48 @@ import (
 )
 
 const baseURL = "https://api.themoviedb.org/3"
+
+// EndpointConfig holds a list of discovery endpoints (mirrors config.TMDBEndpointGroup).
+type EndpointConfig struct {
+	Endpoints []Endpoint
+}
+
+// Endpoint defines a single TMDB discovery query (mirrors config.TMDBEndpoint).
+type Endpoint struct {
+	Name                     string
+	Enabled                  bool
+	EndpointType             string // "discover" | "trending" | "list"
+	Language                 *string
+	SortBy                   *string
+	Pages                    *int
+	VoteAverageGte           *float64
+	VoteCountGte             *int
+	WithGenres               *string
+	WithoutGenres            *string
+	WithKeywords             *string
+	WithoutKeywords          *string
+	WithOriginalLanguage     *string
+	WithOriginCountry        *string
+	WithRuntimeGte           *int
+	WithRuntimeLte           *int
+	WatchRegion              *string
+	IncludeAdult             *bool
+	PrimaryReleaseDateGte    *string
+	PrimaryReleaseDateLte    *string
+	PrimaryReleaseYear       *int
+	WithReleaseType          *string
+	Region                   *string
+	IncludeVideo             *bool
+	FirstAirDateGte          *string
+	FirstAirDateLte          *string
+	FirstAirDateYear         *int
+	WithStatus               *string
+	WithType                 *string
+	WithNetworks             *string
+	IncludeNullFirstAirDates *bool
+	EndpointURL              *string
+	TimeWindow               *string
+}
 
 // Client is a TMDB API client with rate limiting.
 type Client struct {
@@ -29,6 +73,67 @@ func NewClient(apiKey string) *Client {
 		limiter: rate.NewLimiter(rate.Every(250*time.Millisecond), 1),
 		apiKey:  apiKey,
 	}
+}
+
+// parseRelativeDate parses relative date strings like "-6months", "+12months", "2024-01-15".
+func parseRelativeDate(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Check if it's an absolute date
+	if _, err := time.Parse("2006-01-02", s); err == nil {
+		return s
+	}
+	// Parse relative: "-6months", "+1y", "-30d", etc.
+	now := time.Now()
+	if n, unit := parseRelativeUnit(s); n != 0 {
+		var d time.Duration
+		switch unit {
+		case "months", "month":
+			d = time.Duration(n*30) * 24 * time.Hour
+		case "years", "year", "y":
+			d = time.Duration(n*365) * 24 * time.Hour
+		case "days", "day", "d":
+			d = time.Duration(n) * 24 * time.Hour
+		default:
+			return s
+		}
+		return now.Add(d).Format("2006-01-02")
+	}
+	return s
+}
+
+func parseRelativeUnit(s string) (int, string) {
+	s = strings.TrimSpace(s)
+	neg := false
+	if len(s) > 0 && s[0] == '-' {
+		neg = true
+		s = s[1:]
+	} else if len(s) > 0 && s[0] == '+' {
+		s = s[1:]
+	}
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0, ""
+	}
+	n, err := strconv.Atoi(s[:i])
+	if err != nil {
+		return 0, ""
+	}
+	if neg {
+		n = -n
+	}
+	return n, s[i:]
+}
+
+func pagesOrDefault(p *int, def int) int {
+	if p != nil && *p > 0 {
+		return *p
+	}
+	return def
 }
 
 // Movie is a minimal movie entry from TMDB discover/search.
@@ -85,6 +190,143 @@ func (c *Client) TrendingMovies(ctx context.Context, pages int) ([]Movie, error)
 		urlStr := fmt.Sprintf("%s/trending/movie/week?api_key=%s&page=%d",
 			baseURL, c.apiKey, page)
 
+		movies, err := c.fetchDiscoverPage(ctx, urlStr)
+		if err != nil {
+			return all, err
+		}
+		all = append(all, movies...)
+	}
+	return all, nil
+}
+
+// DiscoverMoviesFromConfig executes all configured movie discovery endpoints.
+func (c *Client) DiscoverMoviesFromConfig(ctx context.Context, cfg EndpointConfig) ([]Movie, error) {
+	var all []Movie
+	seen := make(map[int]bool)
+
+	for _, ep := range cfg.Endpoints {
+		if !ep.Enabled {
+			continue
+		}
+		var movies []Movie
+		var err error
+		switch ep.EndpointType {
+		case "discover":
+			movies, err = c.discoverMovieFromEndpoint(ctx, ep)
+		case "trending":
+			tw := "week"
+			if ep.TimeWindow != nil {
+				tw = *ep.TimeWindow
+			}
+			movies, err = c.trendingMoviesWithParams(ctx, tw, pagesOrDefault(ep.Pages, 1))
+		case "list":
+			region := ""
+			if ep.Region != nil {
+				region = *ep.Region
+			}
+			url := ep.EndpointURL
+			if url == nil {
+				continue
+			}
+			movies, err = c.DiscoverMoviesByRegion(ctx, *url, region, pagesOrDefault(ep.Pages, 1))
+		default:
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		for _, m := range movies {
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				all = append(all, m)
+			}
+		}
+	}
+	return all, nil
+}
+
+func (c *Client) discoverMovieFromEndpoint(ctx context.Context, ep Endpoint) ([]Movie, error) {
+	q := url.Values{}
+	q.Set("api_key", c.apiKey)
+	if ep.Language != nil {
+		q.Set("language", *ep.Language)
+	}
+	if ep.SortBy != nil {
+		q.Set("sort_by", *ep.SortBy)
+	}
+	if ep.IncludeAdult != nil {
+		q.Set("include_adult", fmt.Sprintf("%t", *ep.IncludeAdult))
+	}
+	if ep.IncludeVideo != nil {
+		q.Set("include_video", fmt.Sprintf("%t", *ep.IncludeVideo))
+	}
+	if ep.VoteAverageGte != nil {
+		q.Set("vote_average.gte", fmt.Sprintf("%.1f", *ep.VoteAverageGte))
+	}
+	if ep.VoteCountGte != nil {
+		q.Set("vote_count.gte", fmt.Sprintf("%d", *ep.VoteCountGte))
+	}
+	if ep.WithGenres != nil {
+		q.Set("with_genres", *ep.WithGenres)
+	}
+	if ep.WithoutGenres != nil {
+		q.Set("without_genres", *ep.WithoutGenres)
+	}
+	if ep.WithKeywords != nil {
+		q.Set("with_keywords", *ep.WithKeywords)
+	}
+	if ep.WithoutKeywords != nil {
+		q.Set("without_keywords", *ep.WithoutKeywords)
+	}
+	if ep.WithOriginalLanguage != nil {
+		q.Set("with_original_language", *ep.WithOriginalLanguage)
+	}
+	if ep.WithOriginCountry != nil {
+		q.Set("with_origin_country", *ep.WithOriginCountry)
+	}
+	if ep.PrimaryReleaseYear != nil {
+		q.Set("primary_release_year", fmt.Sprintf("%d", *ep.PrimaryReleaseYear))
+	}
+	if ep.WithRuntimeGte != nil {
+		q.Set("with_runtime.gte", fmt.Sprintf("%d", *ep.WithRuntimeGte))
+	}
+	if ep.WithRuntimeLte != nil {
+		q.Set("with_runtime.lte", fmt.Sprintf("%d", *ep.WithRuntimeLte))
+	}
+	if ep.WithReleaseType != nil {
+		q.Set("with_release_type", *ep.WithReleaseType)
+	}
+	if ep.Region != nil {
+		q.Set("region", *ep.Region)
+	}
+	if ep.WatchRegion != nil {
+		q.Set("watch_region", *ep.WatchRegion)
+	}
+	if ep.PrimaryReleaseDateGte != nil {
+		q.Set("primary_release_date.gte", parseRelativeDate(*ep.PrimaryReleaseDateGte))
+	}
+	if ep.PrimaryReleaseDateLte != nil {
+		q.Set("primary_release_date.lte", parseRelativeDate(*ep.PrimaryReleaseDateLte))
+	}
+
+	var all []Movie
+	pages := pagesOrDefault(ep.Pages, 1)
+	for page := 1; page <= pages; page++ {
+		q.Set("page", fmt.Sprintf("%d", page))
+		urlStr := fmt.Sprintf("%s/discover/movie?%s", baseURL, q.Encode())
+		movies, err := c.fetchDiscoverPage(ctx, urlStr)
+		if err != nil {
+			return all, err
+		}
+		all = append(all, movies...)
+	}
+	return all, nil
+}
+
+func (c *Client) trendingMoviesWithParams(ctx context.Context, timeWindow string, pages int) ([]Movie, error) {
+	var all []Movie
+	for page := 1; page <= pages; page++ {
+		urlStr := fmt.Sprintf("%s/trending/movie/%s?api_key=%s&page=%d", baseURL, timeWindow, c.apiKey, page)
 		movies, err := c.fetchDiscoverPage(ctx, urlStr)
 		if err != nil {
 			return all, err
@@ -240,6 +482,155 @@ func (c *Client) TVTrending(ctx context.Context, pages int) ([]TVShow, error) {
 		urlStr := fmt.Sprintf("%s/trending/tv/week?api_key=%s&page=%d",
 			baseURL, c.apiKey, page)
 
+		shows, err := c.fetchTVPage(ctx, urlStr)
+		if err != nil {
+			return all, err
+		}
+		all = append(all, shows...)
+	}
+	return all, nil
+}
+
+// DiscoverTVFromConfig executes all configured TV discovery endpoints.
+func (c *Client) DiscoverTVFromConfig(ctx context.Context, cfg EndpointConfig) ([]TVShow, error) {
+	var all []TVShow
+	seen := make(map[int]bool)
+
+	for _, ep := range cfg.Endpoints {
+		if !ep.Enabled {
+			continue
+		}
+		var shows []TVShow
+		var err error
+		switch ep.EndpointType {
+		case "discover":
+			shows, err = c.discoverTVFromEndpoint(ctx, ep)
+		case "trending":
+			tw := "week"
+			if ep.TimeWindow != nil {
+				tw = *ep.TimeWindow
+			}
+			shows, err = c.trendingTVWithParams(ctx, tw, pagesOrDefault(ep.Pages, 1))
+		case "list":
+			url := ep.EndpointURL
+			if url == nil {
+				continue
+			}
+			shows, err = c.fetchTVListPage(ctx, *url, pagesOrDefault(ep.Pages, 1))
+		default:
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		for _, s := range shows {
+			if !seen[s.ID] {
+				seen[s.ID] = true
+				all = append(all, s)
+			}
+		}
+	}
+	return all, nil
+}
+
+func (c *Client) discoverTVFromEndpoint(ctx context.Context, ep Endpoint) ([]TVShow, error) {
+	q := url.Values{}
+	q.Set("api_key", c.apiKey)
+	if ep.Language != nil {
+		q.Set("language", *ep.Language)
+	}
+	if ep.SortBy != nil {
+		q.Set("sort_by", *ep.SortBy)
+	}
+	if ep.IncludeAdult != nil {
+		q.Set("include_adult", fmt.Sprintf("%t", *ep.IncludeAdult))
+	}
+	if ep.IncludeNullFirstAirDates != nil {
+		q.Set("include_null_first_air_dates", fmt.Sprintf("%t", *ep.IncludeNullFirstAirDates))
+	}
+	if ep.VoteAverageGte != nil {
+		q.Set("vote_average.gte", fmt.Sprintf("%.1f", *ep.VoteAverageGte))
+	}
+	if ep.VoteCountGte != nil {
+		q.Set("vote_count.gte", fmt.Sprintf("%d", *ep.VoteCountGte))
+	}
+	if ep.WithGenres != nil {
+		q.Set("with_genres", *ep.WithGenres)
+	}
+	if ep.WithoutGenres != nil {
+		q.Set("without_genres", *ep.WithoutGenres)
+	}
+	if ep.WithKeywords != nil {
+		q.Set("with_keywords", *ep.WithKeywords)
+	}
+	if ep.WithoutKeywords != nil {
+		q.Set("without_keywords", *ep.WithoutKeywords)
+	}
+	if ep.WithOriginalLanguage != nil {
+		q.Set("with_original_language", *ep.WithOriginalLanguage)
+	}
+	if ep.WithOriginCountry != nil {
+		q.Set("with_origin_country", *ep.WithOriginCountry)
+	}
+	if ep.WithRuntimeGte != nil {
+		q.Set("with_runtime.gte", fmt.Sprintf("%d", *ep.WithRuntimeGte))
+	}
+	if ep.WithRuntimeLte != nil {
+		q.Set("with_runtime.lte", fmt.Sprintf("%d", *ep.WithRuntimeLte))
+	}
+	if ep.WithStatus != nil {
+		q.Set("with_status", *ep.WithStatus)
+	}
+	if ep.WithType != nil {
+		q.Set("with_type", *ep.WithType)
+	}
+	if ep.WithNetworks != nil {
+		q.Set("with_networks", *ep.WithNetworks)
+	}
+	if ep.WatchRegion != nil {
+		q.Set("watch_region", *ep.WatchRegion)
+	}
+	if ep.FirstAirDateGte != nil {
+		q.Set("first_air_date.gte", parseRelativeDate(*ep.FirstAirDateGte))
+	}
+	if ep.FirstAirDateLte != nil {
+		q.Set("first_air_date.lte", parseRelativeDate(*ep.FirstAirDateLte))
+	}
+	if ep.FirstAirDateYear != nil {
+		q.Set("first_air_date_year", fmt.Sprintf("%d", *ep.FirstAirDateYear))
+	}
+
+	var all []TVShow
+	pages := pagesOrDefault(ep.Pages, 1)
+	for page := 1; page <= pages; page++ {
+		q.Set("page", fmt.Sprintf("%d", page))
+		urlStr := fmt.Sprintf("%s/discover/tv?%s", baseURL, q.Encode())
+		shows, err := c.fetchTVPage(ctx, urlStr)
+		if err != nil {
+			return all, err
+		}
+		all = append(all, shows...)
+	}
+	return all, nil
+}
+
+func (c *Client) trendingTVWithParams(ctx context.Context, timeWindow string, pages int) ([]TVShow, error) {
+	var all []TVShow
+	for page := 1; page <= pages; page++ {
+		urlStr := fmt.Sprintf("%s/trending/tv/%s?api_key=%s&page=%d", baseURL, timeWindow, c.apiKey, page)
+		shows, err := c.fetchTVPage(ctx, urlStr)
+		if err != nil {
+			return all, err
+		}
+		all = append(all, shows...)
+	}
+	return all, nil
+}
+
+func (c *Client) fetchTVListPage(ctx context.Context, endpoint string, pages int) ([]TVShow, error) {
+	var all []TVShow
+	for page := 1; page <= pages; page++ {
+		urlStr := fmt.Sprintf("%s%s?api_key=%s&page=%d", baseURL, endpoint, c.apiKey, page)
 		shows, err := c.fetchTVPage(ctx, urlStr)
 		if err != nil {
 			return all, err
