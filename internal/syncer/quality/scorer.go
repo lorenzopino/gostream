@@ -9,6 +9,7 @@ import (
 type Weights struct {
 	Res4K           int `json:"res_4k"`
 	Res1080p        int `json:"res_1080p"`
+	Res720p         int `json:"res_720p"`
 	HDR             int `json:"hdr"`
 	DolbyVision     int `json:"dolby_vision"`
 	HDR10Plus       int `json:"hdr10_plus"`
@@ -29,6 +30,7 @@ type Profile struct {
 var (
 	re4K        = regexp.MustCompile(`(?i)(4k|2160p|uhd)`)
 	re1080p     = regexp.MustCompile(`(?i)(1080p)`)
+	re720p      = regexp.MustCompile(`(?i)\b720p\b`)
 	reHDR       = regexp.MustCompile(`(?i)\bHDR\b`)
 	reDV        = regexp.MustCompile(`(?i)(dolby.?vision|\bdv\b)`)
 	reHDR10Plus = regexp.MustCompile(`(?i)(hdr10\+|hdr10plus)`)
@@ -47,6 +49,7 @@ func DefaultMovieProfile() Profile {
 		Weights: Weights{
 			Res4K:           200,
 			Res1080p:        50,
+			Res720p:         0,
 			HDR:             100,
 			DolbyVision:     150,
 			HDR10Plus:       100,
@@ -86,6 +89,8 @@ func Score(title string, seeders int, profile Profile) int {
 		score += w.Res4K
 	} else if re1080p.MatchString(title) {
 		score += w.Res1080p
+	} else if re720p.MatchString(title) {
+		score += w.Res720p
 	}
 
 	if reDV.MatchString(title) {
