@@ -38,6 +38,7 @@ type TVProfile struct {
 	Include4K       *bool              `json:"include_4k"`
 	Include1080p    *bool              `json:"include_1080p"`
 	Include720p     *bool              `json:"include_720p"`
+	Include480p     *bool              `json:"include_480p"`
 	SizeFloorGB     map[string]float64 `json:"size_floor_gb,omitempty"`
 	SizeCeilingGB   map[string]float64 `json:"size_ceiling_gb,omitempty"`
 	MinSeeders4K    *int               `json:"min_seeders_4k"`
@@ -49,16 +50,17 @@ type TVProfile struct {
 
 // TVScoreWeights holds configurable scoring weights for TV.
 type TVScoreWeights struct {
-	Resolution4K    *int `json:"resolution_4k,omitempty"`
-	Resolution1080p *int `json:"resolution_1080p,omitempty"`
-	Resolution720p  *int `json:"resolution_720p,omitempty"`
-	HDR             *int `json:"hdr,omitempty"`
-	Atmos           *int `json:"atmos,omitempty"`
-	Audio51         *int `json:"audio_5_1,omitempty"`
-	ITA             *int `json:"ita,omitempty"`
-	Seeder100Bonus  *int `json:"seeder_100_bonus,omitempty"`
-	Seeder50Bonus   *int `json:"seeder_50_bonus,omitempty"`
-	Seeder20Bonus   *int `json:"seeder_20_bonus,omitempty"`
+	Resolution4K        *int `json:"resolution_4k,omitempty"`
+	Resolution1080p     *int `json:"resolution_1080p,omitempty"`
+	Resolution720p      *int `json:"resolution_720p,omitempty"`
+	Resolution480p      *int `json:"resolution_480p,omitempty"`
+	HDR                 *int `json:"hdr,omitempty"`
+	Atmos               *int `json:"atmos,omitempty"`
+	Audio51             *int `json:"audio_5_1,omitempty"`
+	ITA                 *int `json:"ita,omitempty"`
+	Seeder100Bonus      *int `json:"seeder_100_bonus,omitempty"`
+	Seeder50Bonus       *int `json:"seeder_50_bonus,omitempty"`
+	Seeder20Bonus       *int `json:"seeder_20_bonus,omitempty"`
 	SizeBonusPerGBUnder *int `json:"size_bonus_per_gb_under,omitempty"` // bonus per GB under resolution ceiling
 }
 
@@ -104,13 +106,13 @@ func DefaultSizeFirstMovies() MovieProfile {
 // DefaultQualityFirstTV returns the "quality-first" TV profile.
 func DefaultQualityFirstTV() TVProfile {
 	return TVProfile{
-		Include4K: ptr(true), Include1080p: ptr(true), Include720p: ptr(false),
+		Include4K: ptr(true), Include1080p: ptr(true), Include720p: ptr(false), Include480p: ptr(false),
 		SizeFloorGB:   map[string]float64{"4k": 10, "1080p": 1},
 		SizeCeilingGB: map[string]float64{"4k": 30, "1080p": 30},
 		MinSeeders4K: ptr(10), MinSeeders: ptr(5), FullpackBonus: ptr(500),
-		PriorityOrder: []string{"4k", "1080p", "720p"},
+		PriorityOrder: []string{"4k", "1080p", "720p", "480p"},
 		ScoreWeights: TVScoreWeights{
-			Resolution4K: ptr(200), Resolution1080p: ptr(50),
+			Resolution4K: ptr(200), Resolution1080p: ptr(50), Resolution480p: ptr(100),
 			HDR: ptr(100), Atmos: ptr(50), Audio51: ptr(25),
 			ITA: ptr(40), Seeder100Bonus: ptr(100), Seeder50Bonus: ptr(50), Seeder20Bonus: ptr(10),
 		},
@@ -120,13 +122,13 @@ func DefaultQualityFirstTV() TVProfile {
 // DefaultSizeFirstTV returns the "size-first" TV profile.
 func DefaultSizeFirstTV() TVProfile {
 	return TVProfile{
-		Include4K: ptr(true), Include1080p: ptr(true), Include720p: ptr(true),
-		SizeFloorGB:   map[string]float64{"720p": 0.3, "1080p": 0.5, "4k": 1},
-		SizeCeilingGB: map[string]float64{"720p": 1, "1080p": 2, "4k": 3},
+		Include4K: ptr(true), Include1080p: ptr(true), Include720p: ptr(true), Include480p: ptr(true),
+		SizeFloorGB:   map[string]float64{"720p": 0.2, "1080p": 0.2, "4k": 0.5, "480p": 0.1},
+		SizeCeilingGB: map[string]float64{"720p": 1, "1080p": 2, "4k": 3, "480p": 0.5},
 		MinSeeders4K: ptr(50), MinSeeders: ptr(10), FullpackBonus: ptr(300),
-		PriorityOrder: []string{"720p", "1080p", "4k"},
+		PriorityOrder: []string{"480p", "720p", "1080p", "4k"},
 		ScoreWeights: TVScoreWeights{
-			Resolution720p: ptr(500), Resolution1080p: ptr(300), Resolution4K: ptr(100),
+			Resolution480p: ptr(800), Resolution720p: ptr(600), Resolution1080p: ptr(300), Resolution4K: ptr(100),
 			HDR: ptr(40), Atmos: ptr(25), Audio51: ptr(15),
 			ITA: ptr(40), Seeder100Bonus: ptr(100), Seeder50Bonus: ptr(50), Seeder20Bonus: ptr(10),
 			SizeBonusPerGBUnder: ptr(100),

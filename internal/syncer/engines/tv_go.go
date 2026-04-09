@@ -97,7 +97,7 @@ const (
 	tvFullpackBonus    = 500
 	tvMinSeeders4K     = 10
 	tvMinSeeders       = 5
-	tvMinEpisodeSize   = 1073741824  // 1GB
+	tvMinEpisodeSize   = 214748364   // 0.2GB (200MB)
 	tvMaxEpisodeSize   = 32212254720 // 30GB
 	tvUpgradeThreshold = 1.2
 	tvMinQualitySkip   = 1000
@@ -109,6 +109,7 @@ var (
 	reTV4K        = regexp.MustCompile(`(?i)2160p|4k|uhd`)
 	reTV1080p     = regexp.MustCompile(`(?i)1080p`)
 	reTV720p      = regexp.MustCompile(`(?i)\b720p\b`)
+	reTV480p      = regexp.MustCompile(`(?i)\b480p\b|[^a-z]sd[^a-z]`)
 	reTVHDR       = regexp.MustCompile(`(?i)\bhdr\b|hdr10\+?|\bdv\b|dovi|dolby.?vision`)
 	reTVAtmos     = regexp.MustCompile(`atmos`)
 	reTV51        = regexp.MustCompile(`(?i)5\.1|dd5|ddp5|dts|truehd`)
@@ -156,7 +157,7 @@ func NewTVGoEngine(cfg TVEngineConfig, db *metadb.DB) *TVGoEngine {
 	e := &TVGoEngine{
 		gostorm:          NewGoStormClient(cfg.GoStormURL),
 		tmdb:             tmdb.NewClient(cfg.TMDBAPIKey),
-		torrentio:        torrentio.NewClient(cfg.TorrentioURL, "sort=qualitysize|qualityfilter=480p,720p,scr,cam"),
+		torrentio:        torrentio.NewClient(cfg.TorrentioURL, "sort=qualitysize|qualityfilter=scr,cam"),
 		prowlarr:         prowlarrClient,
 		plexURL:          cfg.PlexURL,
 		plexToken:        cfg.PlexToken,
@@ -640,6 +641,7 @@ type TVStream struct {
 	IsPartialPack bool
 	Is1080p       bool
 	Is720p        bool
+	Is480p        bool
 	QualityScore  int
 	Season        int
 	Seeders       int
@@ -770,11 +772,13 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 	is4K := reTV4K.MatchString(fullText)
 	is1080p := reTV1080p.MatchString(fullText) && !reTV720p.MatchString(fullText)
 	is720p := reTV720p.MatchString(fullText) && !is1080p && !is4K
+	is480p := reTV480p.MatchString(fullText) && !is720p && !is1080p && !is4K
 
 	// Check include flags from profile (nil means use default=true)
 	include4K := prof.Include4K == nil || *prof.Include4K
 	include1080p := prof.Include1080p == nil || *prof.Include1080p
 	include720p := prof.Include720p == nil || *prof.Include720p
+	include480p := prof.Include480p == nil || *prof.Include480p
 	if is4K && !include4K {
 		return nil
 	}
@@ -784,8 +788,11 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 	if is720p && !include720p {
 		return nil
 	}
+	if is480p && !include480p {
+		return nil
+	}
 
-	if !is4K && !is1080p && !is720p {
+	if !is4K && !is1080p && !is720p && !is480p {
 		return nil
 	}
 
@@ -800,6 +807,9 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 
 	sizeGB := s.SizeGB
 
+	// Check if this is a fullpack BEFORE size filtering
+	isFullpack := e.isFullpack(title)
+
 	// Check size floor/ceiling from profile
 	var floorGB, ceilingGB float64
 	if is4K {
@@ -808,21 +818,30 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 	} else if is1080p {
 		floorGB = prof.SizeFloorGB["1080p"]
 		ceilingGB = prof.SizeCeilingGB["1080p"]
-	} else {
+	} else if is720p {
 		floorGB = prof.SizeFloorGB["720p"]
 		ceilingGB = prof.SizeCeilingGB["720p"]
+	} else {
+		floorGB = prof.SizeFloorGB["480p"]
+		ceilingGB = prof.SizeCeilingGB["480p"]
 	}
 
-	if ceilingGB > 0 && sizeGB != 0 && (sizeGB < floorGB || sizeGB > ceilingGB) {
-		return nil
+	// For fullpacks: only check floor (ceiling applies to individual episodes, not total torrent)
+	// For singles: check both floor and ceiling
+	if ceilingGB > 0 && sizeGB != 0 {
+		if sizeGB < floorGB {
+			return nil
+		}
+		if !isFullpack && sizeGB > ceilingGB {
+			return nil
+		}
 	}
 
-	qualityScore := e.calculateQualityScore(fullText, seeders, is4K, is1080p, is720p, ceilingGB, sizeGB)
+	qualityScore := e.calculateQualityScore(fullText, seeders, is4K, is1080p, is720p, is480p, ceilingGB, sizeGB)
 	if qualityScore == 0 {
 		return nil
 	}
 
-	isFullpack := e.isFullpack(title)
 	season := e.extractSeason(title)
 	isPartialPack := false
 	if isFullpack {
@@ -850,6 +869,7 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 		IsPartialPack: isPartialPack,
 		Is1080p:       is1080p,
 		Is720p:        is720p,
+		Is480p:        is480p,
 		QualityScore:  qualityScore,
 		Season:        season,
 		Seeders:       seeders,
@@ -858,7 +878,7 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 	}
 }
 
-func (e *TVGoEngine) calculateQualityScore(text string, seeders int, is4K, is1080p, is720p bool, ceilingGB, sizeGB float64) int {
+func (e *TVGoEngine) calculateQualityScore(text string, seeders int, is4K, is1080p, is720p, is480p bool, ceilingGB, sizeGB float64) int {
 	w := e.qualityProfile.ScoreWeights
 	t := strings.ToLower(text)
 	score := 0
@@ -870,6 +890,8 @@ func (e *TVGoEngine) calculateQualityScore(text string, seeders int, is4K, is108
 		score += *w.Resolution1080p
 	} else if is720p && w.Resolution720p != nil {
 		score += *w.Resolution720p
+	} else if is480p && w.Resolution480p != nil {
+		score += *w.Resolution480p
 	} else {
 		return 0 // No recognized resolution
 	}
@@ -1058,7 +1080,7 @@ func (e *TVGoEngine) processFullpack(ctx context.Context, showName string, strea
 			e.registerEpisode(key, stream.QualityScore, hash, epPath, "fullpack")
 			e.processedThisRun[key] = true
 			created++
-			e.logger.Printf("Created: %s", epFilename)
+			e.logger.Printf("Created: %s (%.1fGB, score:%d)", epFilename, float64(vf.Length)/1024/1024/1024, stream.QualityScore)
 		}
 	}
 
@@ -1134,7 +1156,7 @@ func (e *TVGoEngine) processSingle(ctx context.Context, showName string, stream 
 	if e.createMKV(epPath, streamURL, bestFile.Length, magnet) {
 		e.registerEpisode(key, stream.QualityScore, hash, epPath, "single")
 		e.processedThisRun[key] = true
-		e.logger.Printf("Created: %s", epFilename)
+		e.logger.Printf("Created: %s (%.1fGB, score:%d)", epFilename, float64(bestFile.Length)/1024/1024/1024, stream.QualityScore)
 		return 1
 	}
 
