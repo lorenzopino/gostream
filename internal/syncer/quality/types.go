@@ -30,6 +30,7 @@ type MovieScoreWeights struct {
 	SeederBonus        *int `json:"seeder_bonus,omitempty"`
 	SeederThreshold    *int `json:"seeder_threshold,omitempty"`
 	UnknownSizePenalty *int `json:"unknown_size_penalty,omitempty"`
+	SizeBonusPerGBUnder *int `json:"size_bonus_per_gb_under,omitempty"` // bonus per GB under resolution ceiling
 }
 
 // TVProfile holds all configurable quality parameters for TV torrent selection.
@@ -58,6 +59,7 @@ type TVScoreWeights struct {
 	Seeder100Bonus  *int `json:"seeder_100_bonus,omitempty"`
 	Seeder50Bonus   *int `json:"seeder_50_bonus,omitempty"`
 	Seeder20Bonus   *int `json:"seeder_20_bonus,omitempty"`
+	SizeBonusPerGBUnder *int `json:"size_bonus_per_gb_under,omitempty"` // bonus per GB under resolution ceiling
 }
 
 // DefaultQualityFirstMovies returns the "quality-first" movie profile (matches current hardcoded behavior).
@@ -94,6 +96,7 @@ func DefaultSizeFirstMovies() MovieProfile {
 			Atmos: ptr(25), Audio51: ptr(15), AudioStereo: ptr(10),
 			BluRay: ptr(5), Remux: ptr(-500), ITA: ptr(60),
 			SeederBonus: ptr(5), SeederThreshold: ptr(30), UnknownSizePenalty: ptr(-5),
+			SizeBonusPerGBUnder: ptr(100), // +100 points per GB under ceiling
 		},
 	}
 }
@@ -126,6 +129,7 @@ func DefaultSizeFirstTV() TVProfile {
 			Resolution720p: ptr(500), Resolution1080p: ptr(300), Resolution4K: ptr(100),
 			HDR: ptr(40), Atmos: ptr(25), Audio51: ptr(15),
 			ITA: ptr(40), Seeder100Bonus: ptr(100), Seeder50Bonus: ptr(50), Seeder20Bonus: ptr(10),
+			SizeBonusPerGBUnder: ptr(100),
 		},
 	}
 }

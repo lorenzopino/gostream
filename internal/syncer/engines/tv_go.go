@@ -107,7 +107,8 @@ const (
 
 var (
 	reTV4K        = regexp.MustCompile(`(?i)2160p|4k|uhd`)
-	reTV1080p     = regexp.MustCompile(`1080p`)
+	reTV1080p     = regexp.MustCompile(`(?i)1080p`)
+	reTV720p      = regexp.MustCompile(`(?i)\b720p\b`)
 	reTVHDR       = regexp.MustCompile(`(?i)\bhdr\b|hdr10\+?|\bdv\b|dovi|dolby.?vision`)
 	reTVAtmos     = regexp.MustCompile(`atmos`)
 	reTV51        = regexp.MustCompile(`(?i)5\.1|dd5|ddp5|dts|truehd`)
@@ -637,6 +638,8 @@ type TVStream struct {
 	Hash          string
 	IsFullpack    bool
 	IsPartialPack bool
+	Is1080p       bool
+	Is720p        bool
 	QualityScore  int
 	Season        int
 	Seeders       int
@@ -736,6 +739,7 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 	title := s.Title
 	name := s.Name
 	fullText := title + " " + name
+	prof := e.qualityProfile
 
 	// Hash blacklist check
 	if e.isHashBlacklisted(s.InfoHash) {
@@ -747,23 +751,73 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 		return nil
 	}
 
-	seeders := e.extractSeeders(title)
-	qualityScore := e.calculateQualityScore(fullText, seeders)
+	if reTVExclLang.MatchString(title) {
+		return nil
+	}
 
-	if qualityScore == 0 {
+	seeders := e.extractSeeders(title)
+
+	// Min seeders from profile
+	minSeeders := 10
+	if prof.MinSeeders != nil {
+		minSeeders = *prof.MinSeeders
+	}
+	if seeders < minSeeders {
 		return nil
 	}
 
 	is4K := reTV4K.MatchString(fullText)
-	minReq := tvMinSeeders4K
-	if !is4K {
-		minReq = tvMinSeeders
+	is1080p := reTV1080p.MatchString(fullText) && !reTV720p.MatchString(fullText)
+	is720p := reTV720p.MatchString(fullText) && !is1080p && !is4K
+
+	// Check include flags from profile (nil means use default=true)
+	include4K := prof.Include4K == nil || *prof.Include4K
+	include1080p := prof.Include1080p == nil || *prof.Include1080p
+	include720p := prof.Include720p == nil || *prof.Include720p
+	if is4K && !include4K {
+		return nil
 	}
-	if seeders < minReq {
+	if is1080p && !include1080p {
+		return nil
+	}
+	if is720p && !include720p {
 		return nil
 	}
 
-	if reTVExclLang.MatchString(title) {
+	if !is4K && !is1080p && !is720p {
+		return nil
+	}
+
+	// 4K min seeders from profile
+	min4KSeeders := 10
+	if prof.MinSeeders4K != nil {
+		min4KSeeders = *prof.MinSeeders4K
+	}
+	if is4K && seeders < min4KSeeders {
+		return nil
+	}
+
+	sizeGB := e.extractSizeGB(title)
+
+	// Check size floor/ceiling from profile
+	var floorGB, ceilingGB float64
+	if is4K {
+		floorGB = prof.SizeFloorGB["4k"]
+		ceilingGB = prof.SizeCeilingGB["4k"]
+	} else if is1080p {
+		floorGB = prof.SizeFloorGB["1080p"]
+		ceilingGB = prof.SizeCeilingGB["1080p"]
+	} else {
+		floorGB = prof.SizeFloorGB["720p"]
+		ceilingGB = prof.SizeCeilingGB["720p"]
+	}
+
+	if ceilingGB > 0 && sizeGB != 0 && (sizeGB < floorGB || sizeGB > ceilingGB) {
+		return nil
+	}
+
+	qualityScore := e.calculateQualityScore(fullText, seeders, is4K, is1080p, is720p, ceilingGB)
+	if qualityScore == 0 {
 		return nil
 	}
 
@@ -774,12 +828,17 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 		isPartialPack = reTVRange.MatchString(strings.Split(title, "\n")[0])
 	}
 
+	// Fullpack bonus from profile
+	fullpackBonus := 500
+	if prof.FullpackBonus != nil {
+		fullpackBonus = *prof.FullpackBonus
+	}
 	priorityBonus := 0
 	if isFullpack {
 		if isPartialPack {
-			priorityBonus = tvFullpackBonus / 2
+			priorityBonus = fullpackBonus / 2
 		} else {
-			priorityBonus = tvFullpackBonus
+			priorityBonus = fullpackBonus
 		}
 	}
 
@@ -788,46 +847,65 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 		Hash:          strings.ToLower(s.InfoHash),
 		IsFullpack:    isFullpack,
 		IsPartialPack: isPartialPack,
+		Is1080p:       is1080p,
+		Is720p:        is720p,
 		QualityScore:  qualityScore,
 		Season:        season,
 		Seeders:       seeders,
-		SizeGB:        e.extractSizeGB(title),
+		SizeGB:        sizeGB,
 		Priority:      qualityScore + priorityBonus,
 	}
 }
 
-func (e *TVGoEngine) calculateQualityScore(text string, seeders int) int {
+func (e *TVGoEngine) calculateQualityScore(text string, seeders int, is4K, is1080p, is720p bool, ceilingGB float64) int {
+	w := e.qualityProfile.ScoreWeights
 	t := strings.ToLower(text)
 	score := 0
 
-	if reTV4K.MatchString(t) {
-		score += tv4KBase
-	} else if reTV1080p.MatchString(t) {
-		score += tv1080pBase
+	// Resolution score
+	if is4K && w.Resolution4K != nil {
+		score += *w.Resolution4K
+	} else if is1080p && w.Resolution1080p != nil {
+		score += *w.Resolution1080p
+	} else if is720p && w.Resolution720p != nil {
+		score += *w.Resolution720p
 	} else {
-		return 0
+		return 0 // No recognized resolution
 	}
 
-	if reTVHDR.MatchString(t) {
-		score += tvHDRBonus
+	// HDR / Dolby Vision
+	if reTVHDR.MatchString(t) && w.HDR != nil {
+		score += *w.HDR
 	}
 
-	if reTVAtmos.MatchString(t) {
-		score += tvAtmosBonus
-	} else if reTV51.MatchString(t) {
-		score += tv51Bonus
+	// Audio
+	if reTVAtmos.MatchString(t) && w.Atmos != nil {
+		score += *w.Atmos
+	} else if reTV51.MatchString(t) && w.Audio51 != nil {
+		score += *w.Audio51
 	}
 
-	if reTVITA.MatchString(t) {
-		score += tvITABonus
+	// Italian language
+	if reTVITA.MatchString(t) && w.ITA != nil {
+		score += *w.ITA
 	}
 
-	if seeders >= 100 {
-		score += 100
-	} else if seeders >= 50 {
-		score += 50
-	} else if seeders >= 20 {
-		score += 10
+	// Seeder bonus tiers
+	if seeders >= 100 && w.Seeder100Bonus != nil {
+		score += *w.Seeder100Bonus
+	} else if seeders >= 50 && w.Seeder50Bonus != nil {
+		score += *w.Seeder50Bonus
+	} else if seeders >= 20 && w.Seeder20Bonus != nil {
+		score += *w.Seeder20Bonus
+	}
+
+	// Size bonus: +N points per GB under ceiling
+	sizeGB := e.extractSizeGB(text)
+	if sizeGB > 0 && ceilingGB > 0 && w.SizeBonusPerGBUnder != nil {
+		underGB := ceilingGB - sizeGB
+		if underGB > 0 {
+			score += int(underGB) * (*w.SizeBonusPerGBUnder)
+		}
 	}
 
 	return score

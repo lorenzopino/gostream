@@ -342,7 +342,7 @@ func (e *MovieGoEngine) buildExistingMovieIndex() (map[string]movieFile, map[str
 		is4K := reM4K.MatchString(name)
 		is1080p := reM1080p.MatchString(name) && !reM720p.MatchString(name)
 		is720p := reM720p.MatchString(name) && !is1080p && !is4K
-		score := e.calculateMovieScore(name, 0, 0, is4K, is1080p, is720p)
+		score := e.calculateMovieScore(name, 0, 0, is4K, is1080p, is720p, 0)
 		if existing, ok := index[imdb]; !ok || score > existing.score {
 			index[imdb] = movieFile{path: path, imdb: imdb, score: score}
 		}
@@ -648,7 +648,7 @@ func (e *MovieGoEngine) classifyMovieStream(s prowlarr.Stream) *MovieStream {
 		return nil
 	}
 
-	score := e.calculateMovieScore(fullText, seeders, sizeGB, is4K, is1080p, is720p)
+	score := e.calculateMovieScore(fullText, seeders, sizeGB, is4K, is1080p, is720p, ceilingGB)
 	if score <= 0 {
 		return nil
 	}
@@ -665,7 +665,7 @@ func (e *MovieGoEngine) classifyMovieStream(s prowlarr.Stream) *MovieStream {
 	}
 }
 
-func (e *MovieGoEngine) calculateMovieScore(text string, seeders int, sizeGB float64, is4K, is1080p, is720p bool) int {
+func (e *MovieGoEngine) calculateMovieScore(text string, seeders int, sizeGB float64, is4K, is1080p, is720p bool, ceilingGB float64) int {
 	w := e.qualityProfile.ScoreWeights
 	score := 0
 
@@ -711,15 +711,21 @@ func (e *MovieGoEngine) calculateMovieScore(text string, seeders int, sizeGB flo
 		score += *w.UnknownSizePenalty
 	}
 
-	// Seeder bonus (capped at threshold)
-	if w.SeederBonus != nil && w.SeederThreshold != nil {
-		if seeders > *w.SeederThreshold {
-			bonus := seeders
-			if bonus > 50 {
-				bonus = 50
-			}
-			score += bonus * (*w.SeederBonus) / 5
+	// Size bonus: +N points per GB under ceiling (rewards smaller files)
+	if sizeGB > 0 && ceilingGB > 0 && w.SizeBonusPerGBUnder != nil {
+		underGB := ceilingGB - sizeGB
+		if underGB > 0 {
+			score += int(underGB) * (*w.SizeBonusPerGBUnder)
 		}
+	}
+
+	// Seeder bonus: +5 points per seeder, capped at 500 total (max at 100 seeders)
+	if w.SeederBonus != nil && seeders > 0 {
+		bonus := seeders * (*w.SeederBonus)
+		if bonus > 500 {
+			bonus = 500
+		}
+		score += bonus
 	}
 
 	return score
