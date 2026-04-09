@@ -762,7 +762,8 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 	if prof.MinSeeders != nil {
 		minSeeders = *prof.MinSeeders
 	}
-	if seeders < minSeeders {
+	// Only filter by seeders if we have a valid count (some indexers like Pirate Bay don't report it)
+	if seeders > 0 && seeders < minSeeders {
 		return nil
 	}
 

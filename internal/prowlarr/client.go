@@ -91,14 +91,20 @@ func (c *Client) fetchFromProwlarr(imdbID, contentType, title string, categories
 
 	var queries []map[string]string
 	if contentType == "series" {
+		// TV: query by IMDB ID
 		queries = append(queries, mergeParams(baseParams, map[string]string{
 			"query":      imdbID,
 			"categories": categories[0],
 		}))
-		if title != "" && len(categories) > 1 {
+		// Also query by title for indexers that don't map IMDB IDs (YTS, etc.)
+		if title != "" {
+			cat := categories[0]
+			if len(categories) > 1 {
+				cat = categories[1]
+			}
 			queries = append(queries, mergeParams(baseParams, map[string]string{
 				"query":      title,
-				"categories": categories[1],
+				"categories": cat,
 			}))
 		}
 	} else {
