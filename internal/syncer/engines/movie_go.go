@@ -393,14 +393,21 @@ func (e *MovieGoEngine) processMovie(ctx context.Context, movie tmdb.Movie, exis
 	delete(e.noStreamsCache, imdbID)
 
 	// Filter: pick best by priority order + size
+	// Log ALL Prowlarr results to debug why some are filtered
+	for i, s := range streams {
+		if i >= 25 {
+			break
+		}
+		e.logger.Printf("[MovieSync]     Prowlarr #%d: %s", i+1, s.Title)
+	}
 	candidates := e.filterMovieStreams(streams)
 	if len(candidates) == 0 {
 		e.setCache(e.recheckCache, imdbID, CacheEntry{Title: title, Reason: "no_valid_stream", TS: time.Now().Unix()})
 		return false
 	}
-	e.logger.Printf("[MovieSync]   %s: %d candidates after filtering", title, len(candidates))
+	e.logger.Printf("[MovieSync]   %s: %d candidates after filtering (from %d Prowlarr results)", title, len(candidates), len(streams))
 	for i, c := range candidates {
-		if i >= 5 {
+		if i >= 10 {
 			break
 		}
 		e.logger.Printf("[MovieSync]     Candidate #%d: %.2fGB seeders=%d score=%d", i+1, c.SizeGB, c.Seeders, c.QualityScore)

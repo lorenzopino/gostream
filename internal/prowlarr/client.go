@@ -102,12 +102,21 @@ func (c *Client) fetchFromProwlarr(imdbID, contentType, title string, categories
 			}))
 		}
 	} else {
-		// For movies: query each category in parallel
+		// For movies: query each category in parallel with IMDB ID
 		for _, cat := range categories {
 			queries = append(queries, mergeParams(baseParams, map[string]string{
 				"query":      imdbID,
 				"categories": cat,
 			}))
+		}
+		// Also query by title for indexers that don't map IMDB IDs (YTS, etc.)
+		if title != "" {
+			for _, cat := range categories {
+				queries = append(queries, mergeParams(baseParams, map[string]string{
+					"query":      title,
+					"categories": cat,
+				}))
+			}
 		}
 	}
 
