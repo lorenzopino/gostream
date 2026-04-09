@@ -392,11 +392,18 @@ func (e *MovieGoEngine) processMovie(ctx context.Context, movie tmdb.Movie, exis
 	}
 	delete(e.noStreamsCache, imdbID)
 
-	// Filter: 4K first, then 1080p fallback
+	// Filter: pick best by priority order + size
 	candidates := e.filterMovieStreams(streams)
 	if len(candidates) == 0 {
 		e.setCache(e.recheckCache, imdbID, CacheEntry{Title: title, Reason: "no_valid_stream", TS: time.Now().Unix()})
 		return false
+	}
+	e.logger.Printf("[MovieSync]   %s: %d candidates after filtering", title, len(candidates))
+	for i, c := range candidates {
+		if i >= 5 {
+			break
+		}
+		e.logger.Printf("[MovieSync]     Candidate #%d: %.2fGB seeders=%d score=%d", i+1, c.SizeGB, c.Seeders, c.QualityScore)
 	}
 
 	// Check if we already have this movie
@@ -420,8 +427,10 @@ func (e *MovieGoEngine) processMovie(ctx context.Context, movie tmdb.Movie, exis
 		}
 
 		magnet := BuildMagnet(c.Hash, title, DefaultTrackers())
+		e.logger.Printf("[MovieSync]     Trying: %.2fGB hash=%s", c.SizeGB, c.Hash)
 		hash, err := e.gostorm.AddTorrent(ctx, magnet, title)
 		if err != nil || hash == "" {
+			e.logger.Printf("[MovieSync]     AddTorrent failed: err=%v", err)
 			e.setCache(e.addFailCache, imdbID, CacheEntry{Title: title, Reason: "add_failed", TS: time.Now().Unix()})
 			continue
 		}
@@ -434,17 +443,21 @@ func (e *MovieGoEngine) processMovie(ctx context.Context, movie tmdb.Movie, exis
 
 		info, err := e.gostorm.GetTorrentInfo(ctx, hash, maxWait)
 		if err != nil {
+			e.logger.Printf("[MovieSync]     GetTorrentInfo failed for %.2fGB: %v (waited %ds)", c.SizeGB, err, maxWait)
 			e.setCache(e.noMKVCache, hash, CacheEntry{Reason: "metadata_timeout", TS: time.Now().Unix()})
 			e.gostorm.RemoveTorrent(ctx, hash)
 			continue
 		}
 
-		videoFiles := e.filterVideoFiles(info.FileStats, c.Is4K)
+		videoFiles := e.filterVideoFiles(info.FileStats, c.Is4K, c.Is1080p, c.Is720p)
 		if len(videoFiles) == 0 {
+			e.logger.Printf("[MovieSync]     No valid video files in %.2fGB torrent (%d files total)", c.SizeGB, len(info.FileStats))
 			e.setCache(e.noMKVCache, hash, CacheEntry{Reason: "no_valid_files", TS: time.Now().Unix()})
 			e.gostorm.RemoveTorrent(ctx, hash)
 			continue
 		}
+
+		e.logger.Printf("[MovieSync]     SUCCESS: %.2fGB torrent matched with %d video files", c.SizeGB, len(videoFiles))
 
 		// Take largest
 		sort.Slice(videoFiles, func(i, j int) bool {
@@ -598,7 +611,8 @@ func (e *MovieGoEngine) classifyMovieStream(s prowlarr.Stream) *MovieStream {
 	if prof.MinSeeders != nil {
 		minSeeders = *prof.MinSeeders
 	}
-	if seeders < minSeeders {
+	// Only filter by seeders if we have a valid count (some indexers like Pirate Bay don't report it)
+	if seeders > 0 && seeders < minSeeders {
 		return nil
 	}
 
@@ -624,7 +638,7 @@ func (e *MovieGoEngine) classifyMovieStream(s prowlarr.Stream) *MovieStream {
 		return nil
 	}
 
-	sizeGB := e.extractMovieSizeGB(title)
+	sizeGB := s.SizeGB
 
 	// Check size floor/ceiling from profile
 	var floorGB, ceilingGB float64
@@ -752,19 +766,46 @@ func (e *MovieGoEngine) extractMovieSizeGB(title string) float64 {
 	return 0
 }
 
-func (e *MovieGoEngine) filterVideoFiles(files []FileStat, is4K bool) []FileStat {
+func (e *MovieGoEngine) filterVideoFiles(files []FileStat, is4K, is1080p, is720p bool) []FileStat {
+	prof := e.qualityProfile
 	var valid []FileStat
 	for _, f := range files {
 		ext := strings.ToLower(filepath.Ext(f.Path))
 		if ext != ".mkv" && ext != ".mp4" && ext != ".avi" && ext != ".mov" && ext != ".m4v" {
 			continue
 		}
-		minSize := int64(mMovie4KMinGB * 1024 * 1024 * 1024)
-		maxSize := int64(mMovie4KMaxGB * 1024 * 1024 * 1024)
-		if !is4K {
-			minSize = int64(mMovie1080PMinGB * 1024 * 1024 * 1024)
-			maxSize = int64(mMovie1080PMaxGB * 1024 * 1024 * 1024)
+		// Get floor/ceiling from profile (fallback to defaults if not set)
+		var minGB, maxGB float64
+		if is4K {
+			minGB = prof.SizeFloorGB["4k"]
+			maxGB = prof.SizeCeilingGB["4k"]
+			if minGB == 0 {
+				minGB = 1
+			}
+			if maxGB == 0 {
+				maxGB = 60
+			}
+		} else if is1080p {
+			minGB = prof.SizeFloorGB["1080p"]
+			maxGB = prof.SizeCeilingGB["1080p"]
+			if minGB == 0 {
+				minGB = 0.5
+			}
+			if maxGB == 0 {
+				maxGB = 20
+			}
+		} else if is720p {
+			minGB = prof.SizeFloorGB["720p"]
+			maxGB = prof.SizeCeilingGB["720p"]
+			if minGB == 0 {
+				minGB = 0.3
+			}
+			if maxGB == 0 {
+				maxGB = 10
+			}
 		}
+		minSize := int64(minGB * 1024 * 1024 * 1024)
+		maxSize := int64(maxGB * 1024 * 1024 * 1024)
 		if f.Length >= minSize && f.Length <= maxSize {
 			valid = append(valid, f)
 		}

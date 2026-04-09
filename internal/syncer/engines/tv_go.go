@@ -797,7 +797,7 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 		return nil
 	}
 
-	sizeGB := e.extractSizeGB(title)
+	sizeGB := s.SizeGB
 
 	// Check size floor/ceiling from profile
 	var floorGB, ceilingGB float64
@@ -816,7 +816,7 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 		return nil
 	}
 
-	qualityScore := e.calculateQualityScore(fullText, seeders, is4K, is1080p, is720p, ceilingGB)
+	qualityScore := e.calculateQualityScore(fullText, seeders, is4K, is1080p, is720p, ceilingGB, sizeGB)
 	if qualityScore == 0 {
 		return nil
 	}
@@ -857,7 +857,7 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 	}
 }
 
-func (e *TVGoEngine) calculateQualityScore(text string, seeders int, is4K, is1080p, is720p bool, ceilingGB float64) int {
+func (e *TVGoEngine) calculateQualityScore(text string, seeders int, is4K, is1080p, is720p bool, ceilingGB, sizeGB float64) int {
 	w := e.qualityProfile.ScoreWeights
 	t := strings.ToLower(text)
 	score := 0
@@ -899,8 +899,7 @@ func (e *TVGoEngine) calculateQualityScore(text string, seeders int, is4K, is108
 		score += *w.Seeder20Bonus
 	}
 
-	// Size bonus: +N points per GB under ceiling
-	sizeGB := e.extractSizeGB(text)
+	// Size bonus: +N points per GB under ceiling (uses actual size from Prowlarr)
 	if sizeGB > 0 && ceilingGB > 0 && w.SizeBonusPerGBUnder != nil {
 		underGB := ceilingGB - sizeGB
 		if underGB > 0 {

@@ -56,9 +56,10 @@ func DefaultMovieCategories() []string {
 }
 
 // SizeFirstMovieCategories returns categories for size-first movie search.
-// Queries SD, x265, WEB-DL, and HD in parallel to maximize small-file discovery.
+// Uses the broader "Movies" (2000) category to search all subcategories at once,
+// then relies on size ceiling filtering to exclude large files.
 func SizeFirstMovieCategories() []string {
-	return []string{"2030", "2090", "2080", "2040"} // SD + x265 + WEB-DL + HD
+	return []string{"2000"} // All movies (SD, HD, UHD, WEB-DL, x265, etc.)
 }
 
 // fetchFromProwlarr executes the API queries and merges results by infoHash.
@@ -207,6 +208,7 @@ func (c *Client) mapToStremioFormat(results []ProwlarrResult) []Stream {
 			Name:     fmt.Sprintf("Torrentio\n%s", resTag),
 			Title:    formattedTitle,
 			InfoHash: res.InfoHash,
+			SizeGB:   sizeGB,
 			BehaviorHints: BehaviorHints{
 				BingeGroup: fmt.Sprintf("prowlarr-%s", resTag),
 			},

@@ -85,7 +85,7 @@ func DefaultQualityFirstMovies() MovieProfile {
 func DefaultSizeFirstMovies() MovieProfile {
 	return MovieProfile{
 		Include4K: ptr(true), Include1080p: ptr(true), Include720p: ptr(true),
-		SizeFloorGB:   map[string]float64{"720p": 0.5, "1080p": 0.8, "4k": 1},
+		SizeFloorGB:   map[string]float64{"720p": 0.5, "1080p": 0.5, "4k": 1},
 		SizeCeilingGB: map[string]float64{"720p": 3, "1080p": 10, "4k": 15},
 		MinSeeders:           ptr(10),
 		Fallback4KMinSeeders: ptr(50),
@@ -121,7 +121,7 @@ func DefaultQualityFirstTV() TVProfile {
 func DefaultSizeFirstTV() TVProfile {
 	return TVProfile{
 		Include4K: ptr(true), Include1080p: ptr(true), Include720p: ptr(true),
-		SizeFloorGB:   map[string]float64{"720p": 0.3, "1080p": 0.5, "4k": 0.5},
+		SizeFloorGB:   map[string]float64{"720p": 0.3, "1080p": 0.5, "4k": 1},
 		SizeCeilingGB: map[string]float64{"720p": 1, "1080p": 2, "4k": 3},
 		MinSeeders4K: ptr(50), MinSeeders: ptr(10), FullpackBonus: ptr(300),
 		PriorityOrder: []string{"720p", "1080p", "4k"},
