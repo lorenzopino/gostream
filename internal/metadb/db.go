@@ -128,6 +128,24 @@ CREATE TABLE IF NOT EXISTS tv_episodes (
     updated_at    TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tv_hash ON tv_episodes(hash);
+
+CREATE TABLE IF NOT EXISTS torrent_alternatives (
+    content_id          TEXT NOT NULL,
+    content_type        TEXT NOT NULL CHECK(content_type IN ('tv','movie')),
+    rank                INTEGER NOT NULL,
+    hash                TEXT NOT NULL,
+    title               TEXT NOT NULL,
+    size_bytes          INTEGER NOT NULL,
+    seeders             INTEGER NOT NULL DEFAULT 0,
+    quality_score       INTEGER NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','tested_no_better','verified_healthy','verified_slow','dead')),
+    last_health_check   INTEGER NOT NULL DEFAULT 0,
+    avg_speed_kbps      INTEGER NOT NULL DEFAULT 0,
+    replacement_count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (content_id, hash)
+);
+CREATE INDEX IF NOT EXISTS idx_alt_content ON torrent_alternatives(content_id, rank);
+CREATE INDEX IF NOT EXISTS idx_alt_status ON torrent_alternatives(content_type, status, last_health_check);
 `
 	_, err := d.db.Exec(schema)
 	return err

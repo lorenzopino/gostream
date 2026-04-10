@@ -993,7 +993,8 @@
                                 </div>
                             </div>
                             <div class="sched-meta" id="sched-movies-meta"></div>
-                            <button type="button" id="sched-movies-btn" class="btn btn-secondary btn-sm" onclick="runSyncNow('movies')">▶ Run now</button>
+                            <button type="button" id="sched-movies-btn" class="btn btn-secondary btn-sm">▶ Run now</button>
+                            <div id="sched-movies-status" class="status-msg"></div>
                         </div>
 
                         <!-- TV Series Library Sync -->
@@ -1010,7 +1011,8 @@
                                 </div>
                             </div>
                             <div class="sched-meta" id="sched-tv-meta"></div>
-                            <button type="button" id="sched-tv-btn" class="btn btn-secondary btn-sm" onclick="runSyncNow('tv')">▶ Run now</button>
+                            <button type="button" id="sched-tv-btn" class="btn btn-secondary btn-sm">▶ Run now</button>
+                            <div id="sched-tv-status" class="status-msg"></div>
                         </div>
 
                         <!-- Plex Watchlist Sync -->
@@ -1030,7 +1032,8 @@
                                 </select>
                             </div>
                             <div class="sched-meta" id="sched-wl-meta"></div>
-                            <button type="button" id="sched-wl-btn" class="btn btn-secondary btn-sm" onclick="runSyncNow('watchlist')">▶ Run now</button>
+                            <button type="button" id="sched-wl-btn" class="btn btn-secondary btn-sm">▶ Run now</button>
+                            <div id="sched-wl-status" class="status-msg"></div>
                         </div>
 
                     </div><!-- /#sched-body -->
@@ -1496,12 +1499,15 @@
             const job = jobMap[id];
             const btnEl = document.getElementById(id.replace('-meta', '-btn'));
             if (btnEl && job) {
-                if (rt.running) {
-                    btnEl.textContent = '⏹ Stop';
-                    btnEl.onclick = () => stopSyncNow(job);
-                } else {
-                    btnEl.textContent = '▶ Run now';
-                    btnEl.onclick = () => runSyncNow(job);
+                // Don't override button text if a user action is in progress
+                if (!btnEl.dataset.busy) {
+                    if (rt.running) {
+                        btnEl.textContent = '⏹ Stop';
+                        btnEl.onclick = () => stopSyncNow(job);
+                    } else {
+                        btnEl.textContent = '▶ Run now';
+                        btnEl.onclick = () => runSyncNow(job);
+                    }
                 }
             }
         }
@@ -1586,17 +1592,70 @@
         }
 
         async function runSyncNow(type) {
+            const prefix = type === 'movies' ? 'movies' : type === 'tv' ? 'tv' : 'wl';
+            const btn = document.getElementById(`sched-${prefix}-btn`);
+            const status = document.getElementById(`sched-${prefix}-status`);
+            if (!btn || !status) return;
+
+            btn.disabled = true;
+            btn.dataset.busy = '1';
+            btn.textContent = '⏳ Loading...';
+            status.className = 'status-msg';
+            status.textContent = '';
+
             try {
                 const res = await fetch(`${monitorBase}/api/scheduler/${type}/run`, { method: 'POST' });
-                if (res.ok) setTimeout(loadScheduler, 1000);
-            } catch (e) { console.error('runSyncNow error', e); }
+                if (res.status === 409) {
+                    status.textContent = '⚠ Sync already running, wait for it to finish.';
+                    status.className = 'status-msg status-error';
+                } else if (res.ok) {
+                    status.textContent = '✓ Sync started successfully.';
+                    status.className = 'status-msg status-success';
+                    setTimeout(() => { status.className = 'status-msg'; status.textContent = ''; }, 5000);
+                    setTimeout(loadScheduler, 1000);
+                } else {
+                    status.textContent = '✗ Failed to start sync (' + res.status + ').';
+                    status.className = 'status-msg status-error';
+                }
+            } catch (e) {
+                status.textContent = '✗ Network error: ' + e.message;
+                status.className = 'status-msg status-error';
+            } finally {
+                btn.disabled = false;
+                btn.dataset.busy = '';
+            }
         }
 
         async function stopSyncNow(type) {
+            const prefix = type === 'movies' ? 'movies' : type === 'tv' ? 'tv' : 'wl';
+            const btn = document.getElementById(`sched-${prefix}-btn`);
+            const status = document.getElementById(`sched-${prefix}-status`);
+            if (!btn || !status) return;
+
+            btn.disabled = true;
+            btn.dataset.busy = '1';
+            btn.textContent = '⏳ Stopping...';
+            status.className = 'status-msg';
+            status.textContent = '';
+
             try {
                 const res = await fetch(`${monitorBase}/api/scheduler/${type}/stop`, { method: 'POST' });
-                if (res.ok) setTimeout(loadScheduler, 1000);
-            } catch (e) { console.error('stopSyncNow error', e); }
+                if (res.ok) {
+                    status.textContent = '✓ Sync stopped.';
+                    status.className = 'status-msg status-success';
+                    setTimeout(() => { status.className = 'status-msg'; status.textContent = ''; }, 5000);
+                    setTimeout(loadScheduler, 1000);
+                } else {
+                    status.textContent = '✗ Failed to stop sync (' + res.status + ').';
+                    status.className = 'status-msg status-error';
+                }
+            } catch (e) {
+                status.textContent = '✗ Network error: ' + e.message;
+                status.className = 'status-msg status-error';
+            } finally {
+                btn.disabled = false;
+                btn.dataset.busy = '';
+            }
         }
 
         // Build pickers then load data

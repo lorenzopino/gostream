@@ -335,7 +335,7 @@ func (e *TVGoEngine) populateRegistryFromExisting() {
 		season, _ := strconv.Atoi(m[2])
 		episode, _ := strconv.Atoi(m[3])
 		hash8 := m[4]
-		key := e.episodeKey(showName, season, episode)
+		key := e.episodeKey(showName, "", season, episode)
 
 		if _, exists := e.registry[key]; exists {
 			return nil
@@ -402,8 +402,15 @@ func (e *TVGoEngine) registryByPath(path string) (string, bool) {
 	return "", false
 }
 
-func (e *TVGoEngine) episodeKey(show string, season, episode int) string {
+func (e *TVGoEngine) episodeKey(show string, firstAirDate string, season, episode int) string {
 	normalized := reTVNonWord.ReplaceAllString(strings.ToLower(show), "")
+	year := ""
+	if len(firstAirDate) >= 4 {
+		year = firstAirDate[:4]
+	}
+	if year != "" {
+		return fmt.Sprintf("%s_%s_s%02de%02d", normalized, year, season, episode)
+	}
 	return fmt.Sprintf("%s_s%02de%02d", normalized, season, episode)
 }
 
@@ -559,6 +566,9 @@ func (e *TVGoEngine) processShow(ctx context.Context, show tmdb.TVShow) {
 	sort.Slice(streams, func(i, j int) bool {
 		return streams[j].Priority > streams[i].Priority
 	})
+
+	// V430: Save top 20 filtered streams as Torrent Alternatives Cache (TAC)
+	e.saveTVAlternatives(imdbID, showName, details.FirstAirDate, streams)
 
 	created := 0
 	seasonsComplete := make(map[int]bool)
@@ -1053,7 +1063,7 @@ func (e *TVGoEngine) processFullpack(ctx context.Context, showName string, strea
 		}
 
 		season, episode := epInfo[0], epInfo[1]
-		key := e.episodeKey(showName, season, episode)
+		key := e.episodeKey(showName, firstAirDate, season, episode)
 
 		if e.processedThisRun[key] {
 			continue
@@ -1101,7 +1111,7 @@ func (e *TVGoEngine) processSingle(ctx context.Context, showName string, stream 
 	episode, _ := strconv.Atoi(m[2])
 	season := stream.Season
 
-	key := e.episodeKey(showName, season, episode)
+	key := e.episodeKey(showName, firstAirDate, season, episode)
 
 	if e.processedThisRun[key] {
 		return 0
@@ -1450,3 +1460,50 @@ func (e *TVGoEngine) createMKV(path, streamURL string, fileSize int64, magnet st
 	}
 	return os.WriteFile(path, jsonData, 0644) == nil
 }
+
+// saveTVAlternatives saves the top 20 filtered streams as Torrent Alternatives Cache entries.
+// Called after streams are classified and sorted in processShow.
+func (e *TVGoEngine) saveTVAlternatives(imdbID, showName, firstAirDate string, streams []TVStream) {
+	if e.db == nil {
+		return // No SQLite backend
+	}
+	if len(streams) == 0 {
+		return
+	}
+
+	// Cap at 20 alternatives
+	max := 20
+	if len(streams) < max {
+		max = len(streams)
+	}
+
+	alts := make([]metadb.TorrentAlternative, 0, max)
+	for i := 0; i < max; i++ {
+		s := &streams[i]
+		status := "active"
+		if i == 0 {
+			status = "active" // Rank 0 is the primary candidate
+		}
+		alts = append(alts, metadb.TorrentAlternative{
+			ContentID:        imdbID,
+			ContentType:      "tv",
+			Rank:             i + 1,
+			Hash:             s.Hash,
+			Title:            s.Title,
+			Size:             int64(s.SizeGB * 1024 * 1024 * 1024),
+			Seeders:          s.Seeders,
+			QualityScore:     s.QualityScore,
+			Status:           status,
+			LastHealthCheck:  time.Now().Unix(),
+			AvgSpeedKBps:     0,
+			ReplacementCount: 0,
+		})
+	}
+
+	if err := e.db.SaveAlternativesForContent(imdbID, alts); err != nil {
+		e.logger.Printf("[V430] Warning: failed to save TV alternatives for %s: %v", showName, err)
+	} else {
+		e.logger.Printf("[V430] Saved %d torrent alternatives for %s", len(alts), showName)
+	}
+}
+

@@ -276,21 +276,5 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 }
 
 func (t *Torrent) findFileIndex(index int) *torrent.File {
-	st := t.Status()
-	var stFile *state.TorrentFileStat
-	for _, f := range st.FileStats {
-		if index == f.Id {
-			stFile = f
-			break
-		}
-	}
-	if stFile == nil {
-		return nil
-	}
-	for _, file := range t.Files() {
-		if file.Path() == stFile.Path {
-			return file
-		}
-	}
-	return nil
+	return t.getFileByID(index)
 }

@@ -376,6 +376,14 @@ func (c *NativeClient) FetchBlock(hash string, fileID int, offset int64, p []byt
 		return n, nil
 	}
 
+	// V461: Never return n=0 without an error.
+	// If the pipe closes without data (e.g., GoStorm has no pieces at this offset),
+	// io.ReadFull returns n=0, err=io.EOF. Returning this to FUSE causes FFmpeg
+	// to interpret zero bytes as corrupt MKV elements ("Element exceeds" errors).
+	if n == 0 && err != nil {
+		return 0, fmt.Errorf("no data available at offset %d: %w", offset, err)
+	}
+
 	return n, err
 }
 
@@ -386,7 +394,7 @@ func (c *NativeClient) ListTorrents() ([]TorrentStats, error) {
 
 	for _, t := range list {
 		if t != nil {
-			result = append(result, *convertStatusToStats(t.Status()))
+			result = append(result, *convertStatusToStats(t.StatusLight()))
 		}
 	}
 	return result, nil

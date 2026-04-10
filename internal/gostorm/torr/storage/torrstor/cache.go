@@ -68,6 +68,11 @@ type Cache struct {
 	// V305: Bitmap for O(1) piece-in-range check during eviction.
 	// Replaces O(N*R) inRanges() scan with O(N) array lookup.
 	pieceInRange []bool
+
+	// V320: Cached GetState result with 500ms TTL to avoid O(N) piece iteration.
+	cachedState    *state.CacheState
+	cachedStateAt  time.Time
+	muCachedState  sync.Mutex
 }
 
 func NewCache(capacity int64, storage *Storage) *Cache {
@@ -177,6 +182,16 @@ func (c *Cache) AdjustRA(readahead int64) {
 }
 
 func (c *Cache) GetState() *state.CacheState {
+	// V320: Return cached state if fresh (< 500ms).
+	c.muCachedState.Lock()
+	if c.cachedState != nil && time.Since(c.cachedStateAt) < 500*time.Millisecond {
+		st := c.cachedState
+		c.muCachedState.Unlock()
+		return st
+	}
+	c.muCachedState.Unlock()
+
+	// Build fresh state.
 	cState := new(state.CacheState)
 
 	piecesState := make(map[int]state.ItemState, 0)
@@ -225,6 +240,13 @@ func (c *Cache) GetState() *state.CacheState {
 	cState.Filled = fill
 	cState.Pieces = piecesState
 	cState.Readers = readersState
+
+	// V320: Cache the result.
+	c.muCachedState.Lock()
+	c.cachedState = cState
+	c.cachedStateAt = time.Now()
+	c.muCachedState.Unlock()
+
 	return cState
 }
 

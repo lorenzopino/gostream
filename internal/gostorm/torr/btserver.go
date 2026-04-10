@@ -159,11 +159,16 @@ func (bt *BTServer) StartTicker() {
 		}
 		bt.mu.Unlock()
 
-		// Update each torrent concurrently or sequentially?
-		// Sequentially is safer for CPU spikes, and UpdateStats is fast.
+		// V320: UpdateStats runs in parallel across torrents — each locks its own muTorrent independently.
+		var wg sync.WaitGroup
 		for _, t := range list {
-			t.UpdateStats()
+			wg.Add(1)
+			go func(t *Torrent) {
+				defer wg.Done()
+				t.UpdateStats()
+			}(t)
 		}
+		wg.Wait()
 	}
 }
 

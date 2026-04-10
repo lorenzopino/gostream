@@ -32,8 +32,6 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 - Everything ships as a **single binary**: GoStorm engine, GoStream, metrics, control panel, and webhook receiver in one `gostream` executable.
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/MrRobotoGit/gostream)
-[![Docker Pulls](https://img.shields.io/docker/pulls/mrrobotogit/gostream?logo=docker&label=Docker+Pulls)](https://hub.docker.com/r/mrrobotogit/gostream)
-[![Docker Image Size](https://img.shields.io/docker/image-size/mrrobotogit/gostream/latest?logo=docker&label=Image+Size)](https://hub.docker.com/r/mrrobotogit/gostream)
 
 ---
 ## Control Panel
@@ -60,7 +58,6 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 - [Prowlarr Integration](#prowlarr-integration-resilience)
 - [Plex/Jellyfin & Samba Setup](#plex-and-samba-setup)
 - [Build from Source](#build-from-source)
-- [Docker](#docker)
 - [API Reference](#api-quick-reference)
 - [Troubleshooting](#troubleshooting)
 - [Donate](#support)
@@ -846,66 +843,6 @@ sudo systemctl start gostream
 wget https://go.dev/dl/go1.24.0.linux-arm64.tar.gz
 sudo tar -C /usr/local -xzf go1.24.0.linux-arm64.tar.gz
 ```
-
----
-
-## Docker
-
-> [!IMPORTANT]
-> GoStream mounts a FUSE filesystem at startup. Docker blocks this syscall by default — the container requires elevated privileges to run.
-
-Pre-built images for `linux/amd64` and `linux/arm64` are published automatically on every release to Docker Hub and GitHub Container Registry:
-
-| Registry | Image |
-|----------|-------|
-| **Docker Hub** | `mrrobotogit/gostream:latest` |
-| **GHCR** | `ghcr.io/mrrobotogit/gostream:latest` |
-
-**Pull:**
-
-```bash
-docker pull mrrobotogit/gostream:latest
-# or
-docker pull ghcr.io/mrrobotogit/gostream:latest
-```
-
-**Run:**
-
-```bash
-docker run -d \
-  --name gostream \
-  --device /dev/fuse \
-  --cap-add SYS_ADMIN \
-  --cap-add NET_ADMIN \
-  -v /path/to/config.json:/config.json:ro \
-  -v /mnt/gostream-mkv-real:/mnt/gostream-mkv-real \
-  -v /mnt/gostream-mkv-virtual:/mnt/gostream-mkv-virtual \
-  -p 8090:8090 \
-  -p 9080:9080 \
-  mrrobotogit/gostream:latest
-```
-
-Or use `--privileged` as a simpler alternative to the individual capabilities (e.g. on a Raspberry Pi where the container is fully trusted).
-
-`config.json` must be volume-mounted at `/config.json` (the default `MKV_PROXY_CONFIG_PATH`). Use `config.json.example` as the starting point.
-
-**Build from source** (from the repository root):
-
-```bash
-docker build -f docker/Dockerfile -t gostream .
-```
-
-### Windows Docker Installer
-
-For Windows users, a dedicated installer generates a ready-to-use [Dockge](https://github.com/louislam/dockge) stack with GoStream + Plex **or** Jellyfin in a single container:
-
-👉 **[docker-windows/](https://github.com/MrRobotoGit/gostream/tree/main/docker-windows)**
-
-- Run `docker-windows\install-rebuild.bat` — interactive setup (flavor, paths, ports)
-- Auto port conflict resolution
-- Idempotent rebuild: never deletes existing media or config data
-
-> **Requires:** Docker Desktop with WSL2 (Linux containers) and FUSE support (`/dev/fuse` available inside containers).
 
 ---
 

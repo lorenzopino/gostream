@@ -332,33 +332,23 @@ func jsonFloat(m map[string]interface{}, key string) float64 {
 	return 0
 }
 
+// readPlatformCPU reads CPU idle/total ticks from platform-specific sources.
+// Returns (idle, total, ok). Called by readCPU() which handles delta calculation.
+func readPlatformCPU() (idle, total uint64, ok bool) {
+	return readPlatformCPUImpl()
+}
+
 func (c *Collector) readCPU() float64 {
-	data, err := os.ReadFile("/proc/stat")
-	if err != nil {
+	idle, total, ok := readPlatformCPU()
+	if !ok {
 		return 0
-	}
-	lines := strings.SplitN(string(data), "\n", 2)
-	if len(lines) == 0 {
-		return 0
-	}
-	fields := strings.Fields(lines[0])
-	if len(fields) < 5 || fields[0] != "cpu" {
-		return 0
-	}
-	var total, idle uint64
-	for i := 1; i < len(fields); i++ {
-		v, _ := strconv.ParseUint(fields[i], 10, 64)
-		total += v
-		if i == 4 {
-			idle = v
-		}
 	}
 	var pct float64
 	if c.prevCPUTotal > 0 {
-		td := total - c.prevCPUTotal
-		id := idle - c.prevCPUIdle
-		if td > 0 {
-			pct = float64(td-id) / float64(td) * 100
+		totalDelta := int64(total) - int64(c.prevCPUTotal)
+		idleDelta := int64(idle) - int64(c.prevCPUIdle)
+		if totalDelta > 0 {
+			pct = float64(totalDelta-idleDelta) / float64(totalDelta) * 100
 		}
 	}
 	c.prevCPUIdle = idle
@@ -366,30 +356,19 @@ func (c *Collector) readCPU() float64 {
 	return pct
 }
 
+// readPlatformRAM reads RAM total and available bytes from platform-specific sources.
+// Returns (totalBytes, availableBytes, ok). Called by readRAM() which calculates percentages.
+func readPlatformRAM() (totalBytes, availableBytes uint64, ok bool) {
+	return readPlatformRAMImpl()
+}
+
 func readRAM() (pct, usedGB, totalGB float64) {
-	data, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
+	memTotal, memAvail, ok := readPlatformRAM()
+	if !ok || memTotal == 0 {
 		return
 	}
-	var memTotal, memAvail uint64
-	for _, line := range strings.Split(string(data), "\n") {
-		f := strings.Fields(line)
-		if len(f) < 2 {
-			continue
-		}
-		v, _ := strconv.ParseUint(f[1], 10, 64)
-		switch f[0] {
-		case "MemTotal:":
-			memTotal = v
-		case "MemAvailable:":
-			memAvail = v
-		}
-	}
-	if memTotal == 0 {
-		return
-	}
-	totalGB = float64(memTotal) / 1024 / 1024
-	usedGB = float64(memTotal-memAvail) / 1024 / 1024
+	totalGB = float64(memTotal) / 1024 / 1024 / 1024
+	usedGB = float64(memTotal-memAvail) / 1024 / 1024 / 1024
 	pct = usedGB / totalGB * 100
 	return
 }

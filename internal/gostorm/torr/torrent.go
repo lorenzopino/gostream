@@ -409,6 +409,100 @@ func (t *Torrent) Status() *state.TorrentStatus {
 	return st
 }
 
+// getFileByID returns the torrent file with the given 1-based ID.
+// IDs match the order returned by t.Files() (same as Status().FileStats).
+func (t *Torrent) getFileByID(id int) *torrent.File {
+	if id < 1 {
+		return nil
+	}
+	files := t.Files()
+	if id-1 >= len(files) {
+		return nil
+	}
+	return files[id-1]
+}
+
+// FileList returns torrent files sorted by path, matching Status().FileStats order.
+// Uses cachedFileStats if already built to avoid re-sorting.
+func (t *Torrent) FileList() []*torrent.File {
+	files := t.Files()
+	if len(t.cachedFileStats) == len(files) && len(files) > 0 {
+		// cachedFileStats is built — files are already sorted by path.
+		return files
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return utils2.CompareStrings(files[i].Path(), files[j].Path())
+	})
+	return files
+}
+
+// StatusLight returns basic torrent stats without expensive TorrsHash or file sorting.
+// Use for high-frequency callers like ListTorrents, monitoring, or native bridge.
+// FileStats are included only if already cached (nil otherwise).
+func (t *Torrent) StatusLight() *state.TorrentStatus {
+	st := new(state.TorrentStatus)
+
+	t.muTorrent.Lock()
+	st.Stat = t.Stat
+	st.StatString = t.Stat.String()
+	st.Title = t.Title
+	st.Category = t.Category
+	st.Poster = t.Poster
+	st.Data = t.Data
+	st.Timestamp = t.Timestamp
+	st.TorrentSize = t.Size
+	st.BitRate = t.BitRate
+	st.DurationSeconds = t.DurationSeconds
+	st.IsPriority = t.IsPriority
+
+	if t.TorrentSpec != nil {
+		st.Hash = t.TorrentSpec.InfoHash.HexString()
+	}
+
+	t.muTorrent.Unlock()
+
+	torr := t.Torrent
+	if torr != nil {
+		st.Name = torr.Name()
+		st.Hash = torr.InfoHash().HexString()
+		st.LoadedSize = torr.BytesCompleted()
+
+		st.PreloadedBytes = t.PreloadedBytes
+		st.PreloadSize = t.PreloadSize
+		st.DownloadSpeed = t.DownloadSpeed
+		st.UploadSpeed = t.UploadSpeed
+
+		tst := torr.Stats()
+		st.BytesWritten = tst.BytesWritten.Int64()
+		st.BytesWrittenData = tst.BytesWrittenData.Int64()
+		st.BytesRead = tst.BytesRead.Int64()
+		st.BytesReadData = tst.BytesReadData.Int64()
+		st.BytesReadUsefulData = tst.BytesReadUsefulData.Int64()
+		st.ChunksWritten = tst.ChunksWritten.Int64()
+		st.ChunksRead = tst.ChunksRead.Int64()
+		st.ChunksReadUseful = tst.ChunksReadUseful.Int64()
+		st.ChunksReadWasted = tst.ChunksReadWasted.Int64()
+		st.PiecesDirtiedGood = tst.PiecesDirtiedGood.Int64()
+		st.PiecesDirtiedBad = tst.PiecesDirtiedBad.Int64()
+		st.TotalPeers = tst.TotalPeers
+		st.PendingPeers = tst.PendingPeers
+		st.ActivePeers = tst.ActivePeers
+		st.ConnectedSeeders = tst.ConnectedSeeders
+		st.HalfOpenPeers = tst.HalfOpenPeers
+
+		if torr.Info() != nil {
+			st.TorrentSize = torr.Length()
+			// Use cached file stats if available; don't build if missing.
+			if t.cachedFileStats != nil {
+				st.FileStats = t.cachedFileStats
+			}
+		}
+		// Skip TorrsHash — expensive string packing not needed for high-frequency paths.
+	}
+
+	return st
+}
+
 func (t *Torrent) CacheState() *cacheSt.CacheState {
 	if t.Torrent != nil && t.cache != nil {
 		st := t.cache.GetState()

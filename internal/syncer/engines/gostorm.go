@@ -37,11 +37,12 @@ func NewGoStormClient(baseURL string) *GoStormClient {
 
 // TorrentStats holds torrent information from GoStorm.
 type TorrentStats struct {
-	Hash        string     `json:"hash"`
-	Title       string     `json:"title"`
-	Length      int64      `json:"length"`
-	ActivePeers int        `json:"active_peers"`
-	FileStats   []FileStat `json:"file_stats"`
+	Hash           string     `json:"hash"`
+	Title          string     `json:"title"`
+	Length         int64      `json:"length"`
+	ActivePeers    int        `json:"active_peers"`
+	DownloadSpeed  float64    `json:"download_speed"`
+	FileStats      []FileStat `json:"file_stats"`
 }
 
 // FileStat holds file information from GoStorm.
@@ -148,6 +149,11 @@ func (c *GoStormClient) ListTorrents(ctx context.Context) ([]TorrentStats, error
 		return nil, err
 	}
 	return torrents, nil
+}
+
+// GetTorrent fetches a single torrent's stats by hash.
+func (c *GoStormClient) GetTorrent(ctx context.Context, hash string) (*TorrentStats, error) {
+	return c.getTorrent(ctx, hash)
 }
 
 func (c *GoStormClient) getTorrent(ctx context.Context, hash string) (*TorrentStats, error) {

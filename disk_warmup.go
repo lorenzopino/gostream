@@ -469,22 +469,21 @@ func (d *DiskWarmupCache) GetTailRange(hash string, fileID int) int64 {
 }
 
 func (d *DiskWarmupCache) RemoveHash(hash string) {
-	entries, _ := os.ReadDir(d.dir)
-	prefix := hash + "-"
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasPrefix(name, prefix) && (strings.HasSuffix(name, warmupSuffix) || strings.HasSuffix(name, tailSuffix)) {
-			fullPath := filepath.Join(d.dir, name)
+	// V320: O(1) glob by hash prefix instead of ReadDir O(N).
+	// Each warmup file is named hash-fileID.warmup or hash-fileID.warmup-tail.
+	matches, _ := filepath.Glob(filepath.Join(d.dir, hash+"-*"+warmupSuffix))
+	matchesTail, _ := filepath.Glob(filepath.Join(d.dir, hash+"-*"+tailSuffix))
+	matches = append(matches, matchesTail...)
 
-			if fi, err := e.Info(); err == nil {
-				atomic.AddInt64(&d.totalSize, -fi.Size())
-			}
-
-			d.closeHandle(fullPath)
-			d.sizeCache.Delete(fullPath)
-			d.tailCoverage.Delete(fullPath)
-			os.Remove(fullPath)
+	for _, fullPath := range matches {
+		if fi, err := os.Stat(fullPath); err == nil {
+			atomic.AddInt64(&d.totalSize, -fi.Size())
 		}
+
+		d.closeHandle(fullPath)
+		d.sizeCache.Delete(fullPath)
+		d.tailCoverage.Delete(fullPath)
+		os.Remove(fullPath)
 	}
 }
 

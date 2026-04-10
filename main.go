@@ -13,7 +13,6 @@ import (
 	server "gostream/internal/gostorm"
 	"gostream/internal/gostorm/settings"
 	torrstor "gostream/internal/gostorm/torr/storage/torrstor"
-	tsutils "gostream/internal/gostorm/utils"
 	"gostream/internal/gostorm/web"
 	"gostream/internal/metadb"
 	"gostream/internal/monitor/collector"
@@ -22,6 +21,7 @@ import (
 	"gostream/internal/prowlarr"
 	"gostream/internal/config"
 	"gostream/internal/syncer/engines"
+	"gostream/internal/syncer/health"
 	"gostream/internal/syncer/quality"
 	"gostream/internal/syncer/scheduler"
 	"gostream/internal/updater"
@@ -35,7 +35,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,6 +70,8 @@ var masterDataSemaphore chan struct{}
 var startTime = time.Now()
 var metaCache *LRUCache
 var raCache = newReadAheadCache()
+var scanDetector = newScanDetector(15, 10*time.Second)   // 15 opens in 10s with <1MB avg → scan mode
+var preBufferGate = newPreBufferGate(raCache, 8*1024*1024) // 8MB minimum pre-buffer
 
 var globalRateLimiter *RateLimiter
 var globalLockManager *LockManager
@@ -147,6 +148,29 @@ var activePumps sync.Map        // Map[string]*NativePumpState — one pump per 
 var pumpTimers sync.Map         // key: path, value: *time.Timer
 var priorityTimers sync.Map     // key: path, value: *time.Timer
 
+// V320: O(1) path-level activity tracking — replaces activeHandles.Range() O(N) scans in pump loop.
+// Updated atomically in Read() and ReadAt(), read with atomic.LoadInt64 in nativePump.
+var pathActivityTracker sync.Map // key: path (string), value: *pathActivity
+
+type pathActivity struct {
+	lastActivityNano int64 // nanoseconds since epoch
+}
+
+// trackPathActivity atomically updates the activity timestamp for a path.
+// Called from Read() and Open() to replace activeHandles.Range() O(N) scans.
+func trackPathActivity(path string, now time.Time) {
+	if pa, ok := pathActivityTracker.Load(path); ok {
+		atomic.StoreInt64(&pa.(*pathActivity).lastActivityNano, now.UnixNano())
+	} else {
+		pa, _ = pathActivityTracker.LoadOrStore(path, &pathActivity{lastActivityNano: now.UnixNano()})
+	}
+}
+
+// cleanupPathActivity removes the activity tracker for a path.
+func cleanupPathActivity(path string) {
+	pathActivityTracker.Delete(path)
+}
+
 // OpenTracker: contatori O(1) per handle aperti (per hash e per path).
 // Permette query rapide da cleanup e priority timer senza scansionare activeHandles.
 var globalOpenTracker = opentracker.New()
@@ -181,10 +205,7 @@ func resolveTargetFile(url string, targetSize int64, physicalPath string) (strin
 
 		if t != nil {
 
-			files := t.Files()
-			sort.Slice(files, func(i, j int) bool {
-				return tsutils.CompareStrings(files[i].Path(), files[j].Path())
-			})
+			files := t.FileList()
 
 			var sizeMatchIndex int
 			var matchesBySize int
@@ -748,6 +769,9 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 	// PROACTIVE CLEANUP TRIGGER (V246): must be sync before any Read() can arrive.
 	raCache.SwitchContext(n.vMeta.Path)
 
+	// V430: Track file open for scan detection
+	scanDetector.RecordOpen(n.vMeta.Path)
+
 	// Cancel any pending release timers (Debounce)
 	if oldTimer, ok := pumpTimers.LoadAndDelete(n.vMeta.Path); ok {
 		oldTimer.(*time.Timer).Stop()
@@ -847,11 +871,15 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 	if isNative {
 		h.hash = finalHash
 		h.fileID = fileIdx
-		// Gillian: proactive pump start at Open() — pump ready before first Read().
-		// pumpOnce ensures single start; late rescue path in Read() handles hash=='' case.
-		h.pumpOnce.Do(func() {
-			h.startNativePump(finalHash, fileIdx)
-		})
+		// V430: Suppress pump during scan mode (Jellyfin scanning opens many files with tiny reads).
+		// Pump will start lazily from the Read() rescue path when playback is confirmed.
+		if !scanDetector.IsScanMode() {
+			h.pumpOnce.Do(func() {
+				h.startNativePump(finalHash, fileIdx)
+			})
+		} else {
+			logger.Printf("[V430] Scan mode active — suppressing pump for %s", filepath.Base(n.vMeta.Path))
+		}
 	}
 
 	activeHandles.Store(h, true)
@@ -1110,6 +1138,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, startOffset int64, sharedSta
 			h.hasSlot = false
 		}
 		pumpReader.Close()
+		cleanupPathActivity(h.path)
 		h.mu.Unlock()
 		logger.Printf("[V239] Native Pump Goroutine Ended: %s", filepath.Base(h.path))
 	}()
@@ -1131,24 +1160,17 @@ func (h *MkvHandle) nativePump(ctx context.Context, startOffset int64, sharedSta
 		default:
 		}
 
-		// Release idle slot: confirmed playback gets 2h, background scans get 45s.
-		// Check all handles for this path, not just the pump creator.
-		lastAct := time.Time{}
-		activeHandles.Range(func(key, value interface{}) bool {
-			handle := key.(*MkvHandle)
-			if handle.path == h.path {
-				handle.mu.Lock()
-				if handle.lastActivityTime.After(lastAct) {
-					lastAct = handle.lastActivityTime
-				}
-				handle.mu.Unlock()
-			}
-			return true
-		})
-		// Fallback to pump creator's activity if no active handles found
-		if lastAct.IsZero() {
+		// V320: O(1) activity check via atomic tracker instead of activeHandles.Range() O(N) scan.
+		lastActNano := int64(0)
+		if pa, ok := pathActivityTracker.Load(h.path); ok {
+			lastActNano = atomic.LoadInt64(&pa.(*pathActivity).lastActivityNano)
+		} else if pa, _ := pathActivityTracker.LoadOrStore(h.path, &pathActivity{}); pa != nil {
+			lastActNano = atomic.LoadInt64(&pa.(*pathActivity).lastActivityNano)
+		}
+		// Fallback to pump creator's activity if tracker is empty
+		if lastActNano == 0 {
 			h.mu.Lock()
-			lastAct = h.lastActivityTime
+			lastActNano = h.lastActivityTime.UnixNano()
 			h.mu.Unlock()
 		}
 
@@ -1159,23 +1181,14 @@ func (h *MkvHandle) nativePump(ctx context.Context, startOffset int64, sharedSta
 			}
 		}
 
-		if time.Since(lastAct) > timeoutLimit {
+		if time.Since(time.Unix(0, lastActNano)) > timeoutLimit {
 			logger.Printf("[V262] Idle timeout (%v) for %s - yielding slot", timeoutLimit, filepath.Base(h.path))
 			return
 		}
 
-		// Sync to primary handles only; secondary metadata probes cause false 10GB+ jumps.
-		playerOff := int64(0)
-		activeHandles.Range(func(key, value interface{}) bool {
-			handle := key.(*MkvHandle)
-			if handle.path == h.path && handle.isPrimaryHandle {
-				off := atomic.LoadInt64(&handle.lastOff)
-				if off > playerOff {
-					playerOff = off
-				}
-			}
-			return true
-		})
+		// V320: O(1) player position via atomic lastOff — lastOff is already per-handle atomic.
+		// The pump creator's lastOff is the authoritative position (isPrimaryHandle=true).
+		playerOff := atomic.LoadInt64(&h.lastOff)
 
 		// Snap pump to player position when seek gap exceeds budget, aligned to chunk boundary.
 		jumpThreshold := int64(globalConfig.ReadAheadBudget)
@@ -1339,6 +1352,7 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 	idleTime := now.Sub(h.lastActivityTime)
 	isFirstBlock := (off == 0) || (idleTime > time.Duration(globalConfig.WarmStartIdleSeconds)*time.Second)
 	h.lastActivityTime = now
+	trackPathActivity(h.path, now) // V320: O(1) activity tracking for pump loop
 
 	if now.Sub(h.lastGlobalUpdate) > 1*time.Minute {
 		globalCleanupManager.UpdateActivity(h.path)
@@ -1348,6 +1362,9 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 
 	prevOff := atomic.LoadInt64(&h.lastOff)
 	atomic.StoreInt64(&h.lastOff, off)
+
+	// V430: Track read activity for scan detection
+	scanDetector.RecordRead(h.path, int64(len(dest)))
 
 	// Transition WARMUP→STREAMING on resume (first read >= warmupFileSize) or seek (jump > budget).
 	// Checked after SSD path above so initial reads within warmup zone are still served.
@@ -1453,6 +1470,21 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 		}
 	}
 	end := off + int64(len(dest)) - 1
+
+	// V430: Pre-buffer gate — on first read, wait briefly for pump to fill data.
+	// Prevents user seeing a stall when playback starts with empty cache.
+	if off == 0 {
+		gateStart := time.Now()
+		if !preBufferGate.WaitUntilReady(h.path, off, 2*time.Second) {
+			// Gate timed out — pump may be suppressed (scan mode) or torrent is slow.
+			// Fall through to normal read path (cache miss → pump attach → FetchBlock).
+			if globalConfig.LogLevel == "DEBUG" {
+				logger.Printf("[V430] PreBufferGate timeout for %s after %v", filepath.Base(h.path), time.Since(gateStart))
+			}
+		} else if globalConfig.LogLevel == "DEBUG" {
+			logger.Printf("[V430] PreBufferGate passed for %s in %v", filepath.Base(h.path), time.Since(gateStart))
+		}
+	}
 
 	cacheStart := time.Now()
 	if n := raCache.CopyTo(h.path, off, end, dest); n > 0 {
@@ -1635,7 +1667,7 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 		return fuse.ReadResultData(dest[:n]), 0
 	}
 
-	// FALLBACK: Data Fetch with V265 Retry
+	// FALLBACK: Data Fetch with V461 Retry
 	// If cache miss, use FetchBlock. Retry up to 3 times if torrent not ready (async Wake).
 	var buf []byte
 	var n int
@@ -1668,8 +1700,11 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 		}
 	}
 
-	// If everything fails, return EAGAIN as last resort
-	return nil, syscall.EAGAIN
+	// V461: All retries exhausted. Return EIO instead of EAGAIN or falling through
+	// to DATA_READY with n=0 (which would copy zero bytes → MKV corruption).
+	// EIO tells the kernel "I/O error" — FFmpeg will handle it as a read failure
+	// and may retry or report the error to the user, but won't process corrupt data.
+	return nil, syscall.EIO
 
 DATA_READY:
 
@@ -1859,6 +1894,10 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 	lastOffset := atomic.LoadInt64(&h.lastOff)
 	isProbeOnly := lastOffset < 2*1024*1024 // < 2MB = probe/scanner, not real playback
 	if h.hasWarmup && isProbeOnly {
+		// V430: Evict all read-ahead buffers for this path — they're stale from scanner probes.
+		raCache.EvictPath(h.path)
+		logger.Printf("[V430] Evicting read-ahead cache for probe-only path: %s", filepath.Base(h.path))
+
 		if val, ok := playbackRegistry.Load(h.path); ok {
 			state := val.(*PlaybackState)
 			state.mu.RLock()
@@ -2257,6 +2296,43 @@ func (c *ReadAheadCache) Stats() (totalBytes int64, activeBytes int64, entries i
 	}
 
 	return totalBytes, activeBytes, entries
+}
+
+// EvictPath removes all cached chunks for a specific path.
+// Used to free stale buffer space when a file was probe-only (scanner).
+func (c *ReadAheadCache) EvictPath(path string) {
+	prefix := path + ":"
+	for _, shard := range c.shards {
+		shard.mu.Lock()
+		var freed int64
+		var toDelete []string
+		for key, buf := range shard.buffers {
+			if strings.HasPrefix(key, prefix) {
+				toDelete = append(toDelete, key)
+				freed += int64(len(buf.data))
+			}
+		}
+		for _, key := range toDelete {
+			delete(shard.buffers, key)
+		}
+		// Rebuild order list without deleted keys
+		if len(toDelete) > 0 {
+			newOrder := make([]string, 0, len(shard.order))
+			deleted := make(map[string]bool, len(toDelete))
+			for _, k := range toDelete {
+				deleted[k] = true
+			}
+			for _, k := range shard.order {
+				if !deleted[k] {
+					newOrder = append(newOrder, k)
+				}
+			}
+			shard.order = newOrder
+			shard.total -= freed
+		}
+		shard.mu.Unlock()
+		atomic.AddInt64(&c.used, -freed)
+	}
 }
 
 // triggerGlobalEviction removes stale session data and old chunks from all shards.
@@ -3224,6 +3300,26 @@ func main() {
 			sched.Run(backgroundStopChan)
 		})
 		logger.Printf("[Scheduler] enabled (Go native)")
+
+		// V430: Offline Health Checker — monitors torrent health and replaces dead/slow ones.
+		// Runs every 24h, only offline (never during playback).
+		if stateDB != nil {
+			gostormClient := engines.NewGoStormClient(globalConfig.GoStormBaseURL)
+			tester := &goStormTorrentTester{client: gostormClient}
+			replacer := &goStormTorrentReplacer{client: gostormClient, logger: logger}
+			hCfg := health.DefaultConfig()
+			healthChecker := health.New(stateDB, tester, replacer, hCfg, logger)
+
+			hCtx, hCancel := context.WithCancel(context.Background())
+			safeGo(func() {
+				<-backgroundStopChan
+				hCancel()
+			})
+			safeGo(func() {
+				healthChecker.Run(hCtx)
+			})
+			logger.Printf("[HealthChecker] enabled — offline health checks every 24h")
+		}
 	}
 
 	// Health Monitor + Dashboard (Fase 5)
@@ -3497,4 +3593,77 @@ func updateBlockList(urlStr string) {
 	}
 
 	logger.Printf("[BlockList] Updated successfully: %d bytes saved to %s", n, destPath)
+}
+
+// ============================================================
+// V430: Health Checker adapters
+// ============================================================
+
+// goStormTorrentTester implements health.TorrentTester using the GoStorm API.
+type goStormTorrentTester struct {
+	client *engines.GoStormClient
+}
+
+func (t *goStormTorrentTester) TestTorrent(ctx context.Context, hash, magnet, title string) (speedKBps int64, seeders int, err error) {
+	// Re-add torrent if magnet provided (GoStorm tolerates duplicates)
+	if magnet != "" {
+		if _, err := t.client.AddTorrent(ctx, magnet, title); err != nil {
+			return 0, 0, fmt.Errorf("add torrent: %w", err)
+		}
+	}
+
+	// Wait for metadata — 90s is enough for even slow torrents
+	info, err := t.client.GetTorrentInfo(ctx, hash, 90)
+	if err != nil {
+		return 0, 0, fmt.Errorf("get torrent info: %w", err)
+	}
+
+	// GoStorm returns download_speed in bytes/sec. Convert to KBps.
+	speedKBps = int64(info.DownloadSpeed / 1024)
+	seeders = info.ActivePeers
+	return speedKBps, seeders, nil
+}
+
+func (t *goStormTorrentTester) CurrentTorrentStatus(ctx context.Context, hash string) (speedKBps int64, seeders int, active bool) {
+	info, err := t.client.GetTorrent(ctx, hash)
+	if err != nil {
+		return 0, 0, false
+	}
+	speedKBps = int64(info.DownloadSpeed / 1024)
+	seeders = info.ActivePeers
+	return speedKBps, seeders, true
+}
+
+// goStormTorrentReplacer implements health.TorrentReplacer using GoStorm API.
+type goStormTorrentReplacer struct {
+	client *engines.GoStormClient
+	logger *log.Logger
+}
+
+func (r *goStormTorrentReplacer) ReplaceTorrent(ctx context.Context, contentID, oldHash, newHash, newMagnet, newTitle string) (bool, error) {
+	// Add the new torrent
+	if _, err := r.client.AddTorrent(ctx, newMagnet, newTitle); err != nil {
+		if r.logger != nil {
+			r.logger.Printf("[HealthChecker] ReplaceTorrent: AddTorrent failed for %s: %v", newTitle, err)
+		}
+		return false, fmt.Errorf("add torrent: %w", err)
+	}
+
+	// Wait for metadata to confirm it's valid
+	info, err := r.client.GetTorrentInfo(ctx, newHash, 120)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Printf("[HealthChecker] ReplaceTorrent: GetTorrentInfo failed for %s: %v", newTitle, err)
+		}
+		return false, fmt.Errorf("get torrent info: %w", err)
+	}
+
+	if len(info.FileStats) == 0 {
+		return false, fmt.Errorf("replacement torrent has no file stats")
+	}
+
+	if r.logger != nil {
+		r.logger.Printf("[HealthChecker] ReplaceTorrent: verified %s has %d files", newTitle, len(info.FileStats))
+	}
+	return true, nil
 }

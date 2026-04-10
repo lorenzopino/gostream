@@ -7,8 +7,26 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
+
+// Cache TTL for search results.
+const searchCacheTTL = 5 * time.Minute
+
+// searchCacheKey is the composite key for cached search results.
+type searchCacheKey struct {
+	imdbID      string
+	contentType string
+	title       string
+	categories  string // joined categories for cache key
+}
+
+// searchCacheEntry holds cached search results with expiration.
+type searchCacheEntry struct {
+	streams   []Stream
+	expiresAt time.Time
+}
 
 // Client queries the Prowlarr API and returns results in Stremio/Torrentio format.
 // Thread-safe: all methods are safe for concurrent use.
@@ -16,6 +34,10 @@ type Client struct {
 	cfg        ConfigProwlarr
 	httpClient *http.Client
 	searchURL  string
+
+	// V320: TTL cache for search results — avoids repeated Prowlarr queries for same IMDB ID.
+	cacheMu sync.RWMutex
+	cache   map[searchCacheKey]searchCacheEntry
 }
 
 // NewClient creates a Prowlarr client from the given configuration.
@@ -35,6 +57,7 @@ func NewClient(cfg ConfigProwlarr) *Client {
 			},
 		},
 		searchURL: cfg.URL + "/api/v1/search",
+		cache:     make(map[searchCacheKey]searchCacheEntry, 64),
 	}
 }
 
@@ -46,8 +69,56 @@ func (c *Client) FetchTorrents(imdbID, contentType, title string, categories []s
 	if c == nil {
 		return []Stream{}
 	}
+
+	// V320: Check cache first.
+	catKey := strings.Join(categories, ",")
+	key := searchCacheKey{
+		imdbID:      imdbID,
+		contentType: contentType,
+		title:       title,
+		categories:  catKey,
+	}
+
+	c.cacheMu.RLock()
+	if entry, ok := c.cache[key]; ok && time.Now().Before(entry.expiresAt) {
+		result := make([]Stream, len(entry.streams))
+		copy(result, entry.streams)
+		c.cacheMu.RUnlock()
+		return result
+	}
+	c.cacheMu.RUnlock()
+
+	// Cache miss — fetch from Prowlarr.
 	results := c.fetchFromProwlarr(imdbID, contentType, title, categories)
-	return c.mapToStremioFormat(results)
+	streams := c.mapToStremioFormat(results)
+
+	// Store in cache.
+	c.cacheMu.Lock()
+	c.cache[key] = searchCacheEntry{
+		streams:   streams,
+		expiresAt: time.Now().Add(searchCacheTTL),
+	}
+	// Evict old entries (simple: keep max 128 entries).
+	if len(c.cache) > 128 {
+		now := time.Now()
+		for k, v := range c.cache {
+			if now.After(v.expiresAt) {
+				delete(c.cache, k)
+			}
+		}
+		// If still over limit, delete oldest (approximate).
+		if len(c.cache) > 128 {
+			for k := range c.cache {
+				delete(c.cache, k)
+				if len(c.cache) <= 100 {
+					break
+				}
+			}
+		}
+	}
+	c.cacheMu.Unlock()
+
+	return streams
 }
 
 // DefaultMovieCategories returns the default categories for movie search.
@@ -126,42 +197,56 @@ func (c *Client) fetchFromProwlarr(imdbID, contentType, title string, categories
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	ch := make(chan result, len(queries))
 	for i, params := range queries {
 		i, params := i, params
 		go func() {
-			ch <- result{items: c.queryCtx(ctx, params), idx: i}
+			ch <- result{items: c.queryCtxWithRetry(ctx, params), idx: i}
 		}()
 	}
 
-	// Collect results preserving q1-first order for dedup
-	collected := make([][]ProwlarrResult, len(queries))
+	// V320: Inline dedup during collection — avoid double allocation.
+	seen := make(map[string]bool, 64)
+	var merged []ProwlarrResult
 	for range queries {
 		r := <-ch
-		collected[r.idx] = r.items
-	}
-
-	// Merge deduplicating by infoHash (q1 first, then q2)
-	var all []ProwlarrResult
-	for _, items := range collected {
-		all = append(all, items...)
-	}
-	seen := make(map[string]bool, len(all))
-	merged := make([]ProwlarrResult, 0, len(all))
-	for _, r := range all {
-		key := strings.ToLower(r.InfoHash)
-		if key == "" {
-			continue
-		}
-		if !seen[key] {
+		for _, item := range r.items {
+			key := strings.ToLower(item.InfoHash)
+			if key == "" || seen[key] {
+				continue
+			}
 			seen[key] = true
-			merged = append(merged, r)
+			merged = append(merged, item)
 		}
 	}
 	return merged
+}
+
+// queryCtxWithRetry executes a single Prowlarr API GET request with exponential backoff retry.
+func (c *Client) queryCtxWithRetry(ctx context.Context, params map[string]string) []ProwlarrResult {
+	const maxRetries = 2
+	baseDelay := 500 * time.Millisecond
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		results := c.queryCtx(ctx, params)
+		if results != nil || ctx.Err() != nil {
+			return results
+		}
+		if attempt < maxRetries {
+			delay := baseDelay * (1 << attempt) // 500ms, 1s, 2s
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil
+			}
+		}
+	}
+	_ = lastErr // logged by queryCtx
+	return nil
 }
 
 // queryCtx executes a single Prowlarr API GET request, respecting context cancellation.

@@ -116,13 +116,15 @@ func newSimpleLRUCache(capacity int64, ttl time.Duration) *simpleLRUCache {
 	}
 }
 
-// Get retrieves a value from the cache and marks it as recently used
+// Get retrieves a value from the cache and marks it as recently used.
+// V320: Single mutex with immediate promotion — avoids RLock→Unlock→Lock→Unlock
+// double-lock penalty (~20ns+) for hot items. Single Lock is ~10ns.
 func (c *simpleLRUCache) Get(key string) (*Metadata, bool) {
-	// Optimize: Use Read Lock for most accesses
-	c.mu.RLock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	elem, exists := c.items[key]
 	if !exists {
-		c.mu.RUnlock()
 		return nil, false
 	}
 
@@ -130,31 +132,13 @@ func (c *simpleLRUCache) Get(key string) (*Metadata, bool) {
 
 	// Check if entry has expired
 	if time.Now().After(entry.expiresAt) {
-		c.mu.RUnlock()
-		// Determine removal requires Write Lock
-		c.mu.Lock()
-		// Double check
-		if elem, exists := c.items[key]; exists {
-			c.removeElement(elem)
-		}
-		c.mu.Unlock()
+		c.removeElement(elem)
 		return nil, false
 	}
 
-	// Lazy Promotion: Only promote if >10s have passed since last promotion
-	// This avoids "thundering herd" on Write Lock for hot items
-	if time.Since(entry.lastPromoted) > 10*time.Second {
-		c.mu.RUnlock()
-		c.mu.Lock()
-		// Double check existence
-		if elem, exists := c.items[key]; exists {
-			c.order.MoveToFront(elem)
-			elem.Value.(*cacheEntry).lastPromoted = time.Now()
-		}
-		c.mu.Unlock()
-	} else {
-		c.mu.RUnlock()
-	}
+	// Immediate promotion — simpler and faster than lazy double-lock.
+	c.order.MoveToFront(elem)
+	entry.lastPromoted = time.Now()
 
 	return entry.value, true
 }

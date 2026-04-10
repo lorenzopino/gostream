@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -13,11 +14,9 @@ import (
 	"time"
 
 	"github.com/anacrolix/missinggo/v2/httptoo"
-	"github.com/anacrolix/torrent"
 
 	mt "gostream/internal/gostorm/mimetype"
 	sets "gostream/internal/gostorm/settings"
-	"gostream/internal/gostorm/torr/state"
 	"gostream/internal/gostorm/torr/storage/torrstor"
 )
 
@@ -39,6 +38,31 @@ func (w *contextResponseWriter) Write(p []byte) (n int, err error) {
 	}
 }
 
+// contextReader wraps an io.ReadSeeker to abort reads when context is cancelled.
+// Prevents torrent reader from continuing after client disconnects.
+type contextReader struct {
+	r   io.ReadSeeker
+	ctx context.Context
+}
+
+func (cr *contextReader) Read(p []byte) (n int, err error) {
+	select {
+	case <-cr.ctx.Done():
+		return 0, cr.ctx.Err()
+	default:
+		return cr.r.Read(p)
+	}
+}
+
+func (cr *contextReader) Seek(offset int64, whence int) (int64, error) {
+	select {
+	case <-cr.ctx.Done():
+		return 0, cr.ctx.Err()
+	default:
+		return cr.r.Seek(offset, whence)
+	}
+}
+
 func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter) error {
 	// Increment active streams counter
 	streamID := atomic.AddInt32(&activeStreams, 1)
@@ -50,30 +74,8 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 		http.NotFound(resp, req)
 		return errors.New("torrent doesn't have info yet")
 	}
-	// Get file information
-	st := t.Status()
-	var stFile *state.TorrentFileStat
-	for _, fileStat := range st.FileStats {
-		if fileStat == nil {
-			continue
-		}
-		if fileStat.Id == fileID {
-			stFile = fileStat
-			break
-		}
-	}
-	if stFile == nil {
-		return fmt.Errorf("file with id %v not found", fileID)
-	}
-	// Find the actual torrent file
-	files := t.Files()
-	var file *torrent.File
-	for _, tfile := range files {
-		if tfile.Path() == stFile.Path {
-			file = tfile
-			break
-		}
-	}
+	// Get file information directly without Status() overhead.
+	file := t.getFileByID(fileID)
 	if file == nil {
 		return fmt.Errorf("file with id %v not found", fileID)
 	}
@@ -148,7 +150,9 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 		ResponseWriter: resp,
 		ctx:            ctx,
 	}
-	http.ServeContent(wrappedResp, req, file.Path(), time.Unix(t.Timestamp, 0), reader)
+	// V320: Wrap reader to abort reads on context cancellation (client disconnect).
+	wrappedReader := &contextReader{r: reader, ctx: ctx}
+	http.ServeContent(wrappedResp, req, file.Path(), time.Unix(t.Timestamp, 0), wrappedReader)
 
 	if sets.BTsets.EnableDebug {
 		if clerr != nil {

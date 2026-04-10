@@ -11,7 +11,7 @@
     "DisableUTP": false,
     "DisableUpload": false,
     "DownloadRateLimit": 0,
-    "EnableDebug": false,
+    "EnableDebug": true,
     "EnableIPv6": false,
     "ForceEncrypt": false,
     "PeersListenPort": 0,
@@ -26,8 +26,8 @@
     "SslPort": 0,
     "StoreSettingsInJson": true,
     "TorrentDisconnectTimeout": 30,
-    "TorrentsSavePath": "",
+    "TorrentsSavePath": "/Users/lorenzo/MediaCenter/gostream/cache",
     "UploadRateLimit": 0,
-    "UseDisk": false
+    "UseDisk": true
   }
 }
