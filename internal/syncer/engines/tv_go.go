@@ -1065,10 +1065,6 @@ func (e *TVGoEngine) processFullpack(ctx context.Context, showName string, strea
 				e.processedThisRun[key] = true
 				continue
 			}
-			if existing.FilePath != "" {
-				os.Remove(existing.FilePath)
-				e.stats.Upgrades++
-			}
 		}
 
 		seasonDir := filepath.Join(e.tvDir, cleanShow, fmt.Sprintf("Season.%02d", season))
@@ -1077,6 +1073,11 @@ func (e *TVGoEngine) processFullpack(ctx context.Context, showName string, strea
 		streamURL := fmt.Sprintf("%s/stream?link=%s&index=%d&play", e.gostorm.baseURL, hash, vf.ID)
 
 		if e.createMKV(epPath, streamURL, vf.Length, magnet) {
+			// Only remove old file AFTER confirming new one was created (prevents race condition)
+			if existing, ok := e.registry[key]; ok && existing.FilePath != "" && existing.FilePath != epPath {
+				os.Remove(existing.FilePath)
+				e.stats.Upgrades++
+			}
 			e.registerEpisode(key, stream.QualityScore, hash, epPath, "fullpack")
 			e.processedThisRun[key] = true
 			created++
@@ -1141,12 +1142,6 @@ func (e *TVGoEngine) processSingle(ctx context.Context, showName string, stream 
 		return 0
 	}
 
-	// Remove old file AFTER confirming new torrent is valid
-	if existing, ok := e.registry[key]; ok && existing.FilePath != "" {
-		os.Remove(existing.FilePath)
-		e.stats.Upgrades++
-	}
-
 	cleanShow := e.getShowFolderName(showName, firstAirDate)
 	seasonDir := filepath.Join(e.tvDir, cleanShow, fmt.Sprintf("Season.%02d", season))
 	epFilename := e.buildFilename(showName, season, episode, hash[:8])
@@ -1154,6 +1149,11 @@ func (e *TVGoEngine) processSingle(ctx context.Context, showName string, stream 
 	streamURL := fmt.Sprintf("%s/stream?link=%s&index=%d&play", e.gostorm.baseURL, hash, bestFile.ID)
 
 	if e.createMKV(epPath, streamURL, bestFile.Length, magnet) {
+		// Only remove old file AFTER confirming new one was created (prevents race condition)
+		if existing, ok := e.registry[key]; ok && existing.FilePath != "" && existing.FilePath != epPath {
+			os.Remove(existing.FilePath)
+			e.stats.Upgrades++
+		}
 		e.registerEpisode(key, stream.QualityScore, hash, epPath, "single")
 		e.processedThisRun[key] = true
 		e.logger.Printf("Created: %s (%.1fGB, score:%d)", epFilename, float64(bestFile.Length)/1024/1024/1024, stream.QualityScore)
@@ -1203,6 +1203,7 @@ func (e *TVGoEngine) cleanupOrphanedFiles() {
 		regPaths[entry.FilePath] = true
 	}
 
+	// First pass: remove orphaned MKV files
 	filepath.Walk(e.tvDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || !strings.HasSuffix(strings.ToLower(path), ".mkv") {
 			return nil
@@ -1212,6 +1213,29 @@ func (e *TVGoEngine) cleanupOrphanedFiles() {
 		}
 		return nil
 	})
+
+	// Second pass: remove empty season and show directories
+	// Walk in reverse order (deepest first) to clean up properly
+	var dirs []string
+	filepath.Walk(e.tvDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || !info.IsDir() {
+			return nil
+		}
+		dirs = append(dirs, path)
+		return nil
+	})
+	// Reverse iterate (deepest first)
+	for i := len(dirs) - 1; i >= 0; i-- {
+		dir := dirs[i]
+		// Skip the root tvDir
+		if dir == e.tvDir {
+			continue
+		}
+		entries, _ := os.ReadDir(dir)
+		if len(entries) == 0 {
+			os.Remove(dir)
+		}
+	}
 }
 
 func (e *TVGoEngine) rehydrateMissingTorrents(ctx context.Context) {
