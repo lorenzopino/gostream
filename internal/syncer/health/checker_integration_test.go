@@ -12,6 +12,7 @@ import (
 )
 
 type testLogger struct{ t *testing.T }
+
 func (l *testLogger) Printf(format string, v ...interface{}) { l.t.Logf(format, v...) }
 
 // mockTester implements TorrentTester for testing.
@@ -189,12 +190,12 @@ func TestHealthChecker_TryReplace_Success(t *testing.T) {
 	db, tester, replacer, checker := setupIntegrationTest(t)
 
 	dead := metadb.TorrentAlternative{
-		ContentID:   "tt789",
-		ContentType: "movie",
-		Rank:        1,
-		Hash:        "deadhash0000000000000000000000000000ab",
-		Title:       "Dead Movie",
-		Status:      "dead",
+		ContentID:    "tt789",
+		ContentType:  "movie",
+		Rank:         1,
+		Hash:         "deadhash0000000000000000000000000000ab",
+		Title:        "Dead Movie",
+		Status:       "dead",
 		AvgSpeedKBps: 50,
 	}
 	db.UpsertAlternative(dead)
@@ -233,12 +234,12 @@ func TestHealthChecker_TryReplace_NoBetter(t *testing.T) {
 	db, tester, replacer, checker := setupIntegrationTest(t)
 
 	dead := metadb.TorrentAlternative{
-		ContentID:   "tt999",
-		ContentType: "movie",
-		Rank:        1,
-		Hash:        "slowhash0000000000000000000000000000ab",
-		Title:       "Slow Movie",
-		Status:      "verified_slow",
+		ContentID:    "tt999",
+		ContentType:  "movie",
+		Rank:         1,
+		Hash:         "slowhash0000000000000000000000000000ab",
+		Title:        "Slow Movie",
+		Status:       "verified_slow",
 		AvgSpeedKBps: 300,
 	}
 	db.UpsertAlternative(dead)
@@ -289,5 +290,45 @@ func TestHealthChecker_TryReplace_NoAlternatives(t *testing.T) {
 	replaced := checker.tryReplace(context.Background(), &dead)
 	if replaced {
 		t.Error("expected replacement to fail (no alternatives)")
+	}
+}
+
+func TestHealthChecker_TryReplace_SlowTorrentCanPreferSmallerStreamableAlternative(t *testing.T) {
+	db, tester, replacer, checker := setupIntegrationTest(t)
+
+	slow := metadb.TorrentAlternative{
+		ContentID:    "ttsmall",
+		ContentType:  "movie",
+		Rank:         1,
+		Hash:         "slowlarge0000000000000000000000000000ab",
+		Title:        "Movie.2025.1080p.WEB-DL",
+		Size:         int64(5 * 1024 * 1024 * 1024),
+		Seeders:      4,
+		QualityScore: 900,
+		Status:       "verified_slow",
+		AvgSpeedKBps: 300,
+	}
+	db.UpsertAlternative(slow)
+
+	compact := metadb.TorrentAlternative{
+		ContentID:    "ttsmall",
+		ContentType:  "movie",
+		Rank:         2,
+		Hash:         "compact000000000000000000000000000000ab",
+		Title:        "Movie.2025.480p.WEBRip.x265",
+		Size:         int64(650 * 1024 * 1024),
+		Seeders:      25,
+		QualityScore: 500,
+		Status:       "active",
+	}
+	db.UpsertAlternative(compact)
+	tester.SetResult(compact.Hash, 360, 25, nil)
+
+	replaced := checker.tryReplace(context.Background(), &slow)
+	if !replaced {
+		t.Fatal("expected slow large torrent to be replaced by smaller streamable alternative")
+	}
+	if replacer.ReplacementCount() != 1 {
+		t.Fatalf("expected one replacement, got %d", replacer.ReplacementCount())
 	}
 }

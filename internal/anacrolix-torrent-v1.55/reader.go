@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/anacrolix/log"
 	"github.com/anacrolix/missinggo/v2"
@@ -217,6 +218,11 @@ func (r *reader) readOnceAt(ctx context.Context, b []byte, pos int64) (n int, er
 		err = io.EOF
 		return
 	}
+	// V-busyloop-fix: exponential backoff when storage returns n==0.
+	// Defense-in-depth against a tight CPU-pinning loop if a piece is marked
+	// complete but its buffer is truncated and the Complete=false mark in
+	// MemPiece.ReadAt hasn't propagated yet (or in any future similar scenario).
+	var readErrBackoff time.Duration
 	for {
 		var avail int64
 		avail, err = r.waitAvailable(ctx, pos, int64(len(b)), n == 0)
@@ -229,7 +235,24 @@ func (r *reader) readOnceAt(ctx context.Context, b []byte, pos int64) (n int, er
 		n, err = r.t.readAt(b1, r.torrentOffset(pos))
 		if n != 0 {
 			err = nil
+			readErrBackoff = 0
 			return
+		}
+		// n == 0: storage read failed (truncated buffer, unexpected EOF, etc.).
+		// Apply exponential backoff to prevent busy-looping at high CPU cost.
+		if readErrBackoff == 0 {
+			readErrBackoff = 2 * time.Millisecond
+		} else {
+			readErrBackoff *= 2
+			if readErrBackoff > 64*time.Millisecond {
+				readErrBackoff = 64 * time.Millisecond
+			}
+		}
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+			return
+		case <-time.After(readErrBackoff):
 		}
 		if r.t.closed.IsSet() {
 			err = fmt.Errorf("reading from closed torrent: %w", err)
@@ -256,7 +279,9 @@ func (r *reader) readOnceAt(ctx context.Context, b []byte, pos int64) (n int, er
 			// changes (since only the first piece, the one above, could have generated the read error
 			// we're currently handling).
 			if r.pieces.begin != firstPieceIndex {
-				panic(fmt.Sprint(r.pieces.begin, firstPieceIndex))
+				r.log(log.Fstr("reader piece window mismatch for torrent %s: window begins at piece %d, read failed at piece %d; skipping stale readahead completion update",
+					r.t.infoHash.HexString(), r.pieces.begin, firstPieceIndex))
+				return
 			}
 			for index := r.pieces.begin + 1; index < r.pieces.end; index++ {
 				r.t.updatePieceCompletion(index)

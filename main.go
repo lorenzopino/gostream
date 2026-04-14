@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/cespare/xxhash/v2"
 	"gostream/ai"
+	"gostream/internal/config"
 	server "gostream/internal/gostorm"
 	"gostream/internal/gostorm/settings"
 	torrstor "gostream/internal/gostorm/torr/storage/torrstor"
@@ -19,7 +20,6 @@ import (
 	"gostream/internal/monitor/dashboard"
 	"gostream/internal/opentracker"
 	"gostream/internal/prowlarr"
-	"gostream/internal/config"
 	"gostream/internal/syncer/engines"
 	"gostream/internal/syncer/health"
 	"gostream/internal/syncer/quality"
@@ -70,7 +70,7 @@ var masterDataSemaphore chan struct{}
 var startTime = time.Now()
 var metaCache *LRUCache
 var raCache = newReadAheadCache()
-var scanDetector = newScanDetector(15, 10*time.Second)   // 15 opens in 10s with <1MB avg → scan mode
+var scanDetector = newScanDetector(15, 10*time.Second)     // 15 opens in 10s with <1MB avg → scan mode
 var preBufferGate = newPreBufferGate(raCache, 8*1024*1024) // 8MB minimum pre-buffer
 
 var globalRateLimiter *RateLimiter
@@ -141,6 +141,10 @@ var readBufferPool *sync.Pool
 // reImdbID matches "imdb://tt1234567" in the Guid array of Plex webhook payloads.
 var reImdbID = regexp.MustCompile(`"imdb://(tt\d+)"`)
 var reEmptyNumber = regexp.MustCompile(`"(\w+)":\s*,`)
+var reWebhookSeasonEpisode = regexp.MustCompile(`(?i)\bs\d{1,2}e0*(\d{1,3})\b`)
+var reWebhookEpisodeWord = regexp.MustCompile(`(?i)\b(?:episode|episodio|ep|e)\s*0*(\d{1,3})\b`)
+var rePathSeasonEpisode = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])s\d{1,2}e0*(\d{1,3})(?:[^a-z0-9]|$)`)
+var rePathSeasonXEpisode = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])\d{1,2}x0*(\d{1,3})(?:[^a-z0-9]|$)`)
 
 var activeHandles sync.Map      // key: *MkvHandle, value: bool
 var inFlightPrefetches sync.Map // key: "path:offset", value: bool
@@ -532,7 +536,9 @@ func (r *VirtualMkvRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 
 // Statfs implements fs.NodeStatfser to provide filesystem statistics for Samba compatibility
 func (r *VirtualMkvRoot) Statfs(ctx context.Context, out *fuse.StatfsOut) syscall.Errno {
-	logger.Printf("=== STATFS === path=%s", r.sourcePath)
+	if globalConfig.LogLevel == "DEBUG" {
+		logger.Printf("=== STATFS === path=%s", r.sourcePath)
+	}
 
 	// Calculate realistic values based on virtual files
 	// Block size: standard 4KB
@@ -556,8 +562,10 @@ func (r *VirtualMkvRoot) Statfs(ctx context.Context, out *fuse.StatfsOut) syscal
 	// Namemax: maximum filename length
 	out.NameLen = 255
 
-	logger.Printf("STATFS: blocks=%d/%d files=%d/%d bsize=%d",
-		out.Blocks, out.Bfree, out.Files, out.Ffree, out.Bsize)
+	if globalConfig.LogLevel == "DEBUG" {
+		logger.Printf("STATFS: blocks=%d/%d files=%d/%d bsize=%d",
+			out.Blocks, out.Bfree, out.Files, out.Ffree, out.Bsize)
+	}
 
 	return 0
 }
@@ -1820,6 +1828,7 @@ DATA_READY:
 
 func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 	logger.Printf("=== RELEASE VIRTUAL === path=%s", h.path)
+	hadPumpSlot := h.hasSlot
 
 	if val, ok := activePumps.Load(h.path); ok {
 		ps := val.(*NativePumpState)
@@ -1894,19 +1903,23 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 	lastOffset := atomic.LoadInt64(&h.lastOff)
 	isProbeOnly := lastOffset < 2*1024*1024 // < 2MB = probe/scanner, not real playback
 	if h.hasWarmup && isProbeOnly {
-		// V430: Evict all read-ahead buffers for this path — they're stale from scanner probes.
-		raCache.EvictPath(h.path)
-		logger.Printf("[V430] Evicting read-ahead cache for probe-only path: %s", filepath.Base(h.path))
+		if hadPumpSlot {
+			logger.Printf("[V430] Keeping read-ahead cache for pump-backed startup probe: %s", filepath.Base(h.path))
+		} else {
+			// V430: Evict all read-ahead buffers for this path — they're stale from scanner probes.
+			raCache.EvictPath(h.path)
+			logger.Printf("[V430] Evicting read-ahead cache for probe-only path: %s", filepath.Base(h.path))
 
-		if val, ok := playbackRegistry.Load(h.path); ok {
-			state := val.(*PlaybackState)
-			state.mu.RLock()
-			stopped := state.IsStopped
-			everConfirmed := !state.ConfirmedAt.IsZero()
-			state.mu.RUnlock()
-			// Fast-drop only if: explicitly stopped OR never confirmed by any webhook
-			if stopped || !everConfirmed {
-				retentionDelay = 5 * time.Second
+			if val, ok := playbackRegistry.Load(h.path); ok {
+				state := val.(*PlaybackState)
+				state.mu.RLock()
+				stopped := state.IsStopped
+				everConfirmed := !state.ConfirmedAt.IsZero()
+				state.mu.RUnlock()
+				// Fast-drop only if: explicitly stopped OR never confirmed by any webhook
+				if stopped || !everConfirmed {
+					retentionDelay = 5 * time.Second
+				}
 			}
 		}
 	}
@@ -2418,6 +2431,52 @@ func extractHashSuffix(filename string) string {
 	return ""
 }
 
+func extractWebhookEpisodeNumber(title string) (int, bool) {
+	if m := reWebhookSeasonEpisode.FindStringSubmatch(title); len(m) > 1 {
+		if ep, err := strconv.Atoi(m[1]); err == nil {
+			return ep, true
+		}
+	}
+	if m := reWebhookEpisodeWord.FindStringSubmatch(title); len(m) > 1 {
+		if ep, err := strconv.Atoi(m[1]); err == nil {
+			return ep, true
+		}
+	}
+	return 0, false
+}
+
+func extractPathEpisodeNumber(path string) (int, bool) {
+	filename := filepath.Base(path)
+	if m := rePathSeasonEpisode.FindStringSubmatch(filename); len(m) > 1 {
+		if ep, err := strconv.Atoi(m[1]); err == nil {
+			return ep, true
+		}
+	}
+	if m := rePathSeasonXEpisode.FindStringSubmatch(filename); len(m) > 1 {
+		if ep, err := strconv.Atoi(m[1]); err == nil {
+			return ep, true
+		}
+	}
+	return 0, false
+}
+
+func pathMatchesWebhookEpisode(path, libraryType string, targetEpisode int, hasTargetEpisode bool) bool {
+	if libraryType != "show" || !hasTargetEpisode {
+		return true
+	}
+	pathEpisode, ok := extractPathEpisodeNumber(path)
+	return ok && pathEpisode == targetEpisode
+}
+
+func playbackRegistryCount() int {
+	count := 0
+	playbackRegistry.Range(func(_, _ interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+
 // handlePlexWebhook gestisce i messaggi in arrivo dal server Plex
 func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 	logger.Printf("[PLEX] Webhook connection from %s", r.RemoteAddr)
@@ -2495,12 +2554,9 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		targetTitle := strings.ToLower(payload.Metadata.Title)
 		seriesTitle := strings.ToLower(payload.Metadata.GrandparentTitle)
 		targetYear := payload.Metadata.Year
+		targetEpisode, hasTargetEpisode := extractWebhookEpisodeNumber(targetTitle)
 
-		logger.Printf("[DEBUG] Webhook for '%s' / '%s' (%d). Current registry:", targetTitle, seriesTitle, targetYear)
-		playbackRegistry.Range(func(key, value interface{}) bool {
-			logger.Printf("  - Registered: %s", key.(string))
-			return true
-		})
+		logger.Printf("[DEBUG] Webhook for '%s' / '%s' (%d). Registered paths: %d", targetTitle, seriesTitle, targetYear, playbackRegistryCount())
 
 		// Two-pass matching: exact first (IMDB, hash, filename), fuzzy only as fallback.
 
@@ -2533,7 +2589,8 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			state := value.(*PlaybackState)
 
 			// Tentativo 0a: Match per IMDB ID (V281 — immune a titoli localizzati)
-			if webhookImdbID != "" && state.ImdbID != "" && state.ImdbID == webhookImdbID {
+			if webhookImdbID != "" && state.ImdbID != "" && state.ImdbID == webhookImdbID &&
+				pathMatchesWebhookEpisode(path, payload.Metadata.LibrarySectionType, targetEpisode, hasTargetEpisode) {
 				exactMatch = path
 				exactState = state
 				return false
@@ -2576,7 +2633,8 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 				playbackRegistry.Range(func(key, value interface{}) bool {
 					path := key.(string)
 					state := value.(*PlaybackState)
-					if strings.Contains(path, sectionDir) && state.ImdbID == "" {
+					if strings.Contains(path, sectionDir) && state.ImdbID == "" &&
+						pathMatchesWebhookEpisode(path, payload.Metadata.LibrarySectionType, targetEpisode, hasTargetEpisode) {
 						bootPath = path
 						bootState = state
 						bootCount++
@@ -2598,6 +2656,9 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 
 			playbackRegistry.Range(func(key, value interface{}) bool {
 				path := key.(string)
+				if !pathMatchesWebhookEpisode(path, payload.Metadata.LibrarySectionType, targetEpisode, hasTargetEpisode) {
+					return true
+				}
 				filename := strings.ToLower(filepath.Base(path))
 				level := 0
 
@@ -2669,6 +2730,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		targetTitle := strings.ToLower(payload.Metadata.Title)
 		seriesTitle := strings.ToLower(payload.Metadata.GrandparentTitle)
 		targetYear := payload.Metadata.Year
+		targetEpisode, hasTargetEpisode := extractWebhookEpisodeNumber(targetTitle)
 
 		stopTargetSuffix := ""
 		for _, m := range payload.Metadata.Media {
@@ -2695,7 +2757,8 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			path := key.(string)
 			state := value.(*PlaybackState)
 
-			if stopImdbID != "" && state.ImdbID != "" && state.ImdbID == stopImdbID {
+			if stopImdbID != "" && state.ImdbID != "" && state.ImdbID == stopImdbID &&
+				pathMatchesWebhookEpisode(path, payload.Metadata.LibrarySectionType, targetEpisode, hasTargetEpisode) {
 				stopMatch = path
 				stopState = state
 				return false
@@ -2724,6 +2787,9 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			bestLevel := 0
 			playbackRegistry.Range(func(key, value interface{}) bool {
 				path := key.(string)
+				if !pathMatchesWebhookEpisode(path, payload.Metadata.LibrarySectionType, targetEpisode, hasTargetEpisode) {
+					return true
+				}
 				filename := strings.ToLower(filepath.Base(path))
 				level := 0
 
@@ -3223,18 +3289,19 @@ func main() {
 
 		syncers := map[string]scheduler.Syncer{
 			"movies": engines.NewMoviesSyncer(engines.MoviesSyncerConfig{
-				GoStormURL:     globalConfig.GoStormBaseURL,
-				TMDBAPIKey:     globalConfig.TMDBAPIKey,
-				TorrentioURL:   globalConfig.TorrentioURL,
-				PlexURL:        globalConfig.Plex.URL,
-				PlexToken:      globalConfig.Plex.Token,
-				PlexLib:        globalConfig.Plex.LibraryID,
-				MoviesDir:      filepath.Join(globalConfig.PhysicalSourcePath, "movies"),
-				StateDir:       GetStateDir(),
-				LogsDir:        logsDir,
-				ProwlarrCfg:    globalConfig.Prowlarr,
-				QualityProfile: quality.ResolveMovieProfile(globalConfig.Quality),
-				TMDBDiscovery:  quality.TMDBEndpointGroupFromConfig(safeTMDBGroup(globalConfig.TMDBDiscovery.Movies)),
+				GoStormURL:         globalConfig.GoStormBaseURL,
+				TMDBAPIKey:         globalConfig.TMDBAPIKey,
+				TorrentioURL:       globalConfig.TorrentioURL,
+				PlexURL:            globalConfig.Plex.URL,
+				PlexToken:          globalConfig.Plex.Token,
+				PlexLib:            globalConfig.Plex.LibraryID,
+				MoviesDir:          filepath.Join(globalConfig.PhysicalSourcePath, "movies"),
+				StateDir:           GetStateDir(),
+				LogsDir:            logsDir,
+				ProwlarrCfg:        globalConfig.Prowlarr,
+				DB:                 stateDB,
+				QualityProfile:     quality.ResolveMovieProfile(globalConfig.Quality),
+				TMDBDiscovery:      quality.TMDBEndpointGroupFromConfig(safeTMDBGroup(globalConfig.TMDBDiscovery.Movies)),
 				ProwlarrCategories: prowlarrCategoriesForProfile(quality.ResolveMovieProfile(globalConfig.Quality)),
 			}),
 			"tv": engines.NewTVSyncer(engines.TVSyncerConfig{

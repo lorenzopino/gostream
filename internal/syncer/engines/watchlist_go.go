@@ -170,19 +170,33 @@ func (e *WatchlistGoEngine) Run(ctx context.Context) error {
 				continue
 			}
 
-			var bestFile *FileStat
+			var validFiles []FileStat
 			for i := range torrentInfo.FileStats {
 				f := &torrentInfo.FileStats[i]
-				if strings.HasSuffix(strings.ToLower(f.Path), ".mkv") {
-					if bestFile == nil || f.Length > bestFile.Length {
-						bestFile = f
-					}
+				if !strings.HasSuffix(strings.ToLower(f.Path), ".mkv") {
+					continue
 				}
+				resolution := quality.DetectResolution(candidate.Title + " " + f.Path)
+				if _, ok := quality.RankExactStreamingFile(quality.StreamingCandidate{
+					Hash:       candidate.InfoHash,
+					Title:      candidate.Title + " " + f.Path,
+					MediaType:  quality.MediaMovie,
+					Resolution: resolution,
+					SizeGB:     float64(f.Length) / 1024 / 1024 / 1024,
+					Seeders:    extractSeeders(candidate.Title),
+				}, quality.MovieStreamingPolicy()); !ok {
+					continue
+				}
+				validFiles = append(validFiles, *f)
 			}
-			if bestFile == nil {
+			if len(validFiles) == 0 {
 				e.gostorm.RemoveTorrent(ctx, hash)
 				continue
 			}
+			sort.Slice(validFiles, func(i, j int) bool {
+				return validFiles[i].Length > validFiles[j].Length
+			})
+			bestFile := validFiles[0]
 
 			mkvPath, err := e.createMKV(hash, candidate.Title, bestFile.ID, bestFile.Length, magnet, item.IMDBID, item.Title, item.Year)
 			if err != nil || mkvPath == "" {
@@ -390,20 +404,14 @@ func (e *WatchlistGoEngine) getStreams(ctx context.Context, imdbID, title string
 	return streams, nil
 }
 
-const (
-	movie4KMinGB    = 9.0
-	movie4KMaxGB    = 50.0
-	movie1080PMinGB = 4.0
-	movie1080PMaxGB = 20.0
-	minSeeders      = 10
-)
-
 var (
 	reExcludedLangs = regexp.MustCompile(`🇪🇸|🇫🇷|🇩🇪|🇷🇺|🇨🇳|🇯🇵|🇰🇷|🇹🇭|🇵🇹|🇧🇷|🇺🇦|🇵🇱|🇳🇱|🇹🇷|🇸🇦|🇮🇳|🇨🇿|🇭🇺|🇷🇴`)
 	reExcludedDubs  = regexp.MustCompile(`(?i)\b(Ukr|Ukrainian|Ger|German|Fra|French|Spa|Spanish|Por|Portuguese|Rus|Russian|Chi|Chinese|Pol|Polish|Tur|Turkish|Ara|Arabic|Hin|Hindi|Cze|Czech|Hun|Hungarian)\s+Dub\b`)
 	reGarbage       = regexp.MustCompile(`(?i)webscreener|screener|\bscr\b|\bcam\b|camrip|hdcam|telesync|\bts\b|telecine|\btc\b`)
 	re4K            = regexp.MustCompile(`(?i)2160p|4[kK]|uhd`)
 	re1080p         = regexp.MustCompile(`1080p`)
+	re720p          = regexp.MustCompile(`(?i)720p|720i`)
+	re480p          = regexp.MustCompile(`(?i)\b(480p|576p|sd)\b`)
 	reSize          = regexp.MustCompile(`(?i)💾\s*([\d.]+)\s*(GB|MB)`)
 	reSeeders       = regexp.MustCompile(`👤\s*(\d+)`)
 )
@@ -431,16 +439,12 @@ func extractSeeders(title string) int {
 func (e *WatchlistGoEngine) pickBestStream(streams []prowlarr.Stream) []prowlarr.Stream {
 	type scored struct {
 		stream prowlarr.Stream
-		score  int
-		is4K   bool
+		rank   quality.StreamingRank
 	}
 
 	var candidates []scored
 	for _, s := range streams {
-		title := s.Title
-		if extractSeeders(title) < minSeeders {
-			continue
-		}
+		title := s.Title + " " + s.Name
 		if reExcludedLangs.MatchString(title) {
 			continue
 		}
@@ -450,44 +454,32 @@ func (e *WatchlistGoEngine) pickBestStream(streams []prowlarr.Stream) []prowlarr
 		if reGarbage.MatchString(title) {
 			continue
 		}
-
 		gb := extractGB(title)
-		is4K := re4K.MatchString(title)
-
-		if is4K {
-			if gb != 0 && (gb < movie4KMinGB || gb > movie4KMaxGB) {
-				continue
-			}
-		} else {
-			if gb == 0 || gb < movie1080PMinGB || gb > movie1080PMaxGB {
-				continue
-			}
+		if gb == 0 && s.SizeGB > 0 {
+			gb = s.SizeGB
 		}
-
-		sc := quality.Score(title, extractSeeders(title), quality.DefaultMovieProfile())
-		if sc <= 0 {
+		rank, ok := quality.RankStreamingCandidate(quality.StreamingCandidate{
+			Hash:       s.InfoHash,
+			Title:      title,
+			MediaType:  quality.MediaMovie,
+			Resolution: quality.DetectResolution(title),
+			SizeGB:     gb,
+			Seeders:    extractSeeders(title),
+		}, quality.MovieStreamingPolicy())
+		if !ok {
 			continue
 		}
-
-		candidates = append(candidates, scored{stream: s, score: sc, is4K: is4K})
+		candidates = append(candidates, scored{stream: s, rank: rank})
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[j].score < candidates[i].score
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].rank.BetterThan(candidates[j].rank)
 	})
 
 	var result []prowlarr.Stream
 	for _, c := range candidates {
-		if c.is4K {
-			result = append(result, c.stream)
-		}
+		result = append(result, c.stream)
 	}
-	for _, c := range candidates {
-		if !c.is4K {
-			result = append(result, c.stream)
-		}
-	}
-
 	return result
 }
 
@@ -500,6 +492,10 @@ func (e *WatchlistGoEngine) createMKV(hash, streamTitle string, fileIndex int, f
 		qtag = "2160p"
 	} else if re1080p.MatchString(st) {
 		qtag = "1080p"
+	} else if re720p.MatchString(st) {
+		qtag = "720p"
+	} else if re480p.MatchString(st) {
+		qtag = "480p"
 	}
 	if regexp.MustCompile(`(?i)\bdv\b|dovi|dolby.?vision`).MatchString(st) {
 		qtag += "_DV"

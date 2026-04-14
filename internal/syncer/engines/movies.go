@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"gostream/internal/catalog/tmdb"
+	"gostream/internal/metadb"
 	"gostream/internal/prowlarr"
 	"gostream/internal/syncer/quality"
 )
@@ -18,18 +19,19 @@ type MoviesSyncer struct {
 
 // MoviesSyncerConfig holds config for the Go movie engine.
 type MoviesSyncerConfig struct {
-	GoStormURL   string
-	TMDBAPIKey   string
-	TorrentioURL string
-	PlexURL      string
-	PlexToken    string
-	PlexLib      int
-	MoviesDir    string
-	StateDir     string
-	LogsDir      string
-	ProwlarrCfg  prowlarr.ConfigProwlarr
-	QualityProfile  quality.MovieProfile
-	TMDBDiscovery   tmdb.EndpointConfig
+	GoStormURL         string
+	TMDBAPIKey         string
+	TorrentioURL       string
+	PlexURL            string
+	PlexToken          string
+	PlexLib            int
+	MoviesDir          string
+	StateDir           string
+	LogsDir            string
+	ProwlarrCfg        prowlarr.ConfigProwlarr
+	DB                 *metadb.DB
+	QualityProfile     quality.MovieProfile
+	TMDBDiscovery      tmdb.EndpointConfig
 	ProwlarrCategories []string
 }
 
@@ -52,18 +54,19 @@ func NewMoviesSyncer(cfg MoviesSyncerConfig) *MoviesSyncer {
 	}
 
 	engineCfg := MovieEngineConfig{
-		GoStormURL:   cfg.GoStormURL,
-		TMDBAPIKey:   cfg.TMDBAPIKey,
-		TorrentioURL: cfg.TorrentioURL,
-		PlexURL:      cfg.PlexURL,
-		PlexToken:    cfg.PlexToken,
-		PlexLib:      cfg.PlexLib,
-		MoviesDir:    moviesDir,
-		StateDir:     stateDir,
-		LogsDir:      logsDir,
-		ProwlarrCfg:  cfg.ProwlarrCfg,
-		QualityProfile: cfg.QualityProfile,
-		TMDBDiscovery:  cfg.TMDBDiscovery,
+		GoStormURL:         cfg.GoStormURL,
+		TMDBAPIKey:         cfg.TMDBAPIKey,
+		TorrentioURL:       cfg.TorrentioURL,
+		PlexURL:            cfg.PlexURL,
+		PlexToken:          cfg.PlexToken,
+		PlexLib:            cfg.PlexLib,
+		MoviesDir:          moviesDir,
+		StateDir:           stateDir,
+		LogsDir:            logsDir,
+		ProwlarrCfg:        cfg.ProwlarrCfg,
+		DB:                 cfg.DB,
+		QualityProfile:     cfg.QualityProfile,
+		TMDBDiscovery:      cfg.TMDBDiscovery,
 		ProwlarrCategories: cfg.ProwlarrCategories,
 	}
 

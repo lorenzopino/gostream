@@ -20,6 +20,7 @@ import (
 	"gostream/internal/catalog"
 	"gostream/internal/catalog/tmdb"
 	"gostream/internal/catalog/torrentio"
+	"gostream/internal/metadb"
 	"gostream/internal/prowlarr"
 	"gostream/internal/syncer/quality"
 )
@@ -35,6 +36,7 @@ type MovieGoEngine struct {
 	plexLib   int
 	moviesDir string
 	stateDir  string
+	db        *metadb.DB
 	limiter   *rate.Limiter
 	logger    *log.Logger
 
@@ -81,18 +83,19 @@ type BlacklistData struct {
 
 // MovieEngineConfig holds config for the movie engine.
 type MovieEngineConfig struct {
-	GoStormURL   string
-	TMDBAPIKey   string
-	TorrentioURL string
-	PlexURL      string
-	PlexToken    string
-	PlexLib      int
-	MoviesDir    string
-	StateDir     string
-	LogsDir      string
-	ProwlarrCfg     prowlarr.ConfigProwlarr
-	QualityProfile  quality.MovieProfile
-	TMDBDiscovery   tmdb.EndpointConfig
+	GoStormURL         string
+	TMDBAPIKey         string
+	TorrentioURL       string
+	PlexURL            string
+	PlexToken          string
+	PlexLib            int
+	MoviesDir          string
+	StateDir           string
+	LogsDir            string
+	ProwlarrCfg        prowlarr.ConfigProwlarr
+	DB                 *metadb.DB
+	QualityProfile     quality.MovieProfile
+	TMDBDiscovery      tmdb.EndpointConfig
 	ProwlarrCategories []string
 }
 
@@ -127,6 +130,7 @@ var (
 	reM4K        = regexp.MustCompile(`(?i)2160p|4[kK]|uhd`)
 	reM1080p     = regexp.MustCompile(`(?i)1080p|1080i|fhd`)
 	reM720p      = regexp.MustCompile(`(?i)720p|720i`)
+	reM480p      = regexp.MustCompile(`(?i)\b(480p|576p|sd)\b`)
 	reMHDR       = regexp.MustCompile(`(?i)\bhdr\b|hdr10\+?`)
 	reMDV        = regexp.MustCompile(`(?i)\bdv\b|dovi|dolby.?vision`)
 	reMAtmos     = regexp.MustCompile(`(?i)atmos`)
@@ -142,7 +146,7 @@ var (
 	reMMKVHash8  = regexp.MustCompile(`_([a-f0-9]{8})\.mkv$`)
 	reMYear      = regexp.MustCompile(`[._]((?:19|20)\d{2})[._]`)
 	reMNonWord   = regexp.MustCompile(`[^a-z0-9]`)
-	reMQuality   = regexp.MustCompile(`(?i)(2160p|1080p|720p|4k|uhd)`)
+	reMQuality   = regexp.MustCompile(`(?i)(2160p|1080p|720p|480p|576p|4k|uhd|sd)`)
 	reMTitleYear = regexp.MustCompile(`(.+?)[._\s]\(?((?:19|20)\d{2})\)?`)
 )
 
@@ -167,6 +171,7 @@ func NewMovieGoEngine(cfg MovieEngineConfig) *MovieGoEngine {
 		plexLib:   cfg.PlexLib,
 		moviesDir: cfg.MoviesDir,
 		stateDir:  cfg.StateDir,
+		db:        cfg.DB,
 		limiter:   rate.NewLimiter(rate.Every(250*time.Millisecond), 1),
 		logger:    logger,
 
@@ -412,6 +417,7 @@ func (e *MovieGoEngine) processMovie(ctx context.Context, movie tmdb.Movie, exis
 		}
 		e.logger.Printf("[MovieSync]     Candidate #%d: %.2fGB seeders=%d score=%d", i+1, c.SizeGB, c.Seeders, c.QualityScore)
 	}
+	e.saveMovieAlternatives(imdbID, title, candidates)
 
 	// Check if we already have this movie
 	existing := existingIndex[imdbID]
@@ -456,7 +462,7 @@ func (e *MovieGoEngine) processMovie(ctx context.Context, movie tmdb.Movie, exis
 			continue
 		}
 
-		videoFiles := e.filterVideoFiles(info.FileStats, c.Is4K, c.Is1080p, c.Is720p)
+		videoFiles := e.filterVideoFiles(info.FileStats, c)
 		if len(videoFiles) == 0 {
 			e.logger.Printf("[MovieSync]     No valid video files in %.2fGB torrent (%d files total)", c.SizeGB, len(info.FileStats))
 			e.setCache(e.noMKVCache, hash, CacheEntry{Reason: "no_valid_files", TS: time.Now().Unix()})
@@ -483,10 +489,7 @@ func (e *MovieGoEngine) processMovie(ctx context.Context, movie tmdb.Movie, exis
 		streamURL := fmt.Sprintf("%s/stream?link=%s&index=%d&play", e.gostorm.baseURL, hash, bestFile.ID)
 
 		if e.createMKV(mkvPath, streamURL, bestFile.Length, magnet, imdbID) {
-			res := "4K"
-			if !c.Is4K {
-				res = "1080p"
-			}
+			res := c.Resolution
 			e.logger.Printf("[MovieSync] Created: %s (%s, %.1fGB, score:%d)", filename, res, float64(bestFile.Length)/1024/1024/1024, c.QualityScore)
 			e.setCache(e.recheckCache, imdbID, CacheEntry{Title: title, Reason: "processed", TS: time.Now().Unix()})
 			return true
@@ -505,9 +508,12 @@ type MovieStream struct {
 	Is4K         bool
 	Is1080p      bool
 	Is720p       bool
+	Is480p       bool
+	Resolution   quality.Resolution
 	QualityScore int
 	Seeders      int
 	SizeGB       float64
+	Rank         quality.StreamingRank
 }
 
 func (e *MovieGoEngine) getMovieStreams(ctx context.Context, imdbID, title string) ([]prowlarr.Stream, error) {
@@ -538,67 +544,22 @@ func (e *MovieGoEngine) getMovieStreams(ctx context.Context, imdbID, title strin
 }
 
 func (e *MovieGoEngine) filterMovieStreams(streams []prowlarr.Stream) []MovieStream {
-	prof := e.qualityProfile
-	priorityOrder := prof.PriorityOrder
-	if len(priorityOrder) == 0 {
-		priorityOrder = []string{"4k", "1080p", "720p"}
-	}
-
-	// Try each resolution in priority order; first match wins
-	for _, res := range priorityOrder {
-		var candidates []MovieStream
-		for _, s := range streams {
-			c := e.classifyMovieStream(s)
-			if c == nil {
-				continue
-			}
-			// Match resolution to current priority pass
-			match := false
-			switch res {
-			case "4k":
-				match = c.Is4K
-			case "1080p":
-				match = c.Is1080p && !c.Is4K
-			case "720p":
-				match = c.Is720p && !c.Is4K && !c.Is1080p
-			}
-			if !match {
-				continue
-			}
+	var candidates []MovieStream
+	for _, s := range streams {
+		c := e.classifyMovieStream(s)
+		if c != nil {
 			candidates = append(candidates, *c)
 		}
-		if len(candidates) > 0 {
-			sort.Slice(candidates, func(i, j int) bool {
-				return candidates[i].QualityScore > candidates[j].QualityScore
-			})
-			return candidates
-		}
 	}
-
-	// 4K fallback if configured (when 4K wasn't in priority_order or nothing matched)
-	if prof.Fallback4KMinSeeders != nil {
-		var fallback []MovieStream
-		for _, s := range streams {
-			c := e.classifyMovieStream(s)
-			if c != nil && c.Is4K && c.Seeders >= *prof.Fallback4KMinSeeders {
-				fallback = append(fallback, *c)
-			}
-		}
-		if len(fallback) > 0 {
-			sort.Slice(fallback, func(i, j int) bool {
-				return fallback[i].SizeGB < fallback[j].SizeGB
-			})
-			return fallback
-		}
-	}
-
-	return nil
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].Rank.BetterThan(candidates[j].Rank)
+	})
+	return candidates
 }
 
 func (e *MovieGoEngine) classifyMovieStream(s prowlarr.Stream) *MovieStream {
 	title := s.Title
 	fullText := title + " " + s.Name
-	prof := e.qualityProfile
 
 	if reMGarbage.MatchString(fullText) {
 		return nil
@@ -614,63 +575,28 @@ func (e *MovieGoEngine) classifyMovieStream(s prowlarr.Stream) *MovieStream {
 	}
 
 	seeders := e.extractMovieSeeders(title)
-	minSeeders := 15 // fallback default
-	if prof.MinSeeders != nil {
-		minSeeders = *prof.MinSeeders
-	}
-	// Only filter by seeders if we have a valid count (some indexers like Pirate Bay don't report it)
-	if seeders > 0 && seeders < minSeeders {
-		return nil
-	}
 
 	is4K := reM4K.MatchString(fullText)
 	is1080p := reM1080p.MatchString(fullText) && !reM720p.MatchString(fullText)
 	is720p := reM720p.MatchString(fullText) && !is1080p && !is4K
-
-	// Check include flags from profile (nil means use default=true)
-	include4K := prof.Include4K == nil || *prof.Include4K
-	include1080p := prof.Include1080p == nil || *prof.Include1080p
-	include720p := prof.Include720p == nil || *prof.Include720p
-	if is4K && !include4K {
+	is480p := reM480p.MatchString(fullText) && !is720p && !is1080p && !is4K
+	resolution := quality.DetectResolution(fullText)
+	if resolution == quality.ResolutionUnknown {
 		return nil
 	}
-	if is1080p && !include1080p {
-		return nil
-	}
-	if is720p && !include720p {
-		return nil
-	}
-
-	if !is4K && !is1080p && !is720p {
-		return nil
-	}
-
 	sizeGB := s.SizeGB
-
-	// Check size floor/ceiling from profile
-	var floorGB, ceilingGB float64
-	if is4K {
-		floorGB = prof.SizeFloorGB["4k"]
-		ceilingGB = prof.SizeCeilingGB["4k"]
-	} else if is1080p {
-		floorGB = prof.SizeFloorGB["1080p"]
-		ceilingGB = prof.SizeCeilingGB["1080p"]
-	} else {
-		floorGB = prof.SizeFloorGB["720p"]
-		ceilingGB = prof.SizeCeilingGB["720p"]
+	if sizeGB == 0 {
+		sizeGB = e.extractMovieSizeGB(title)
 	}
-
-	// Check size floor/ceiling from profile
-	if ceilingGB > 0 && sizeGB != 0 && (sizeGB < floorGB || sizeGB > ceilingGB) {
-		return nil
-	}
-	// Reject unknown size only for 4K (unless it's a fallback scenario)
-	if ceilingGB > 0 && sizeGB == 0 && is4K && prof.Fallback4KMinSeeders == nil {
-		return nil
-	}
-
-	score := e.calculateMovieScore(fullText, seeders, sizeGB, is4K, is1080p, is720p, ceilingGB)
-	if score <= 0 {
+	rank, ok := quality.RankStreamingCandidate(quality.StreamingCandidate{
+		Hash:       s.InfoHash,
+		Title:      fullText,
+		MediaType:  quality.MediaMovie,
+		Resolution: resolution,
+		SizeGB:     sizeGB,
+		Seeders:    seeders,
+	}, quality.MovieStreamingPolicy())
+	if !ok {
 		return nil
 	}
 
@@ -680,9 +606,12 @@ func (e *MovieGoEngine) classifyMovieStream(s prowlarr.Stream) *MovieStream {
 		Is4K:         is4K,
 		Is1080p:      is1080p,
 		Is720p:       is720p,
-		QualityScore: score,
+		Is480p:       is480p,
+		Resolution:   resolution,
+		QualityScore: rank.Score,
 		Seeders:      seeders,
 		SizeGB:       sizeGB,
+		Rank:         rank,
 	}
 }
 
@@ -773,47 +702,22 @@ func (e *MovieGoEngine) extractMovieSizeGB(title string) float64 {
 	return 0
 }
 
-func (e *MovieGoEngine) filterVideoFiles(files []FileStat, is4K, is1080p, is720p bool) []FileStat {
-	prof := e.qualityProfile
+func (e *MovieGoEngine) filterVideoFiles(files []FileStat, stream MovieStream) []FileStat {
 	var valid []FileStat
 	for _, f := range files {
 		ext := strings.ToLower(filepath.Ext(f.Path))
 		if ext != ".mkv" && ext != ".mp4" && ext != ".avi" && ext != ".mov" && ext != ".m4v" {
 			continue
 		}
-		// Get floor/ceiling from profile (fallback to defaults if not set)
-		var minGB, maxGB float64
-		if is4K {
-			minGB = prof.SizeFloorGB["4k"]
-			maxGB = prof.SizeCeilingGB["4k"]
-			if minGB == 0 {
-				minGB = 1
-			}
-			if maxGB == 0 {
-				maxGB = 60
-			}
-		} else if is1080p {
-			minGB = prof.SizeFloorGB["1080p"]
-			maxGB = prof.SizeCeilingGB["1080p"]
-			if minGB == 0 {
-				minGB = 0.5
-			}
-			if maxGB == 0 {
-				maxGB = 20
-			}
-		} else if is720p {
-			minGB = prof.SizeFloorGB["720p"]
-			maxGB = prof.SizeCeilingGB["720p"]
-			if minGB == 0 {
-				minGB = 0.3
-			}
-			if maxGB == 0 {
-				maxGB = 10
-			}
-		}
-		minSize := int64(minGB * 1024 * 1024 * 1024)
-		maxSize := int64(maxGB * 1024 * 1024 * 1024)
-		if f.Length >= minSize && f.Length <= maxSize {
+		sizeGB := float64(f.Length) / 1024 / 1024 / 1024
+		if _, ok := quality.RankExactStreamingFile(quality.StreamingCandidate{
+			Hash:       stream.Hash,
+			Title:      stream.Title + " " + f.Path,
+			MediaType:  quality.MediaMovie,
+			Resolution: stream.Resolution,
+			SizeGB:     sizeGB,
+			Seeders:    stream.Seeders,
+		}, quality.MovieStreamingPolicy()); ok {
 			valid = append(valid, f)
 		}
 	}
@@ -835,6 +739,12 @@ func (e *MovieGoEngine) buildMovieFilename(title, releaseDate string, stream Mov
 
 	if stream.Is4K {
 		base += "_2160p"
+	} else if stream.Is1080p {
+		base += "_1080p"
+	} else if stream.Is720p {
+		base += "_720p"
+	} else if stream.Is480p || stream.Resolution == quality.ResolutionSD {
+		base += "_480p"
 	} else {
 		base += "_1080p"
 	}
@@ -862,6 +772,37 @@ func (e *MovieGoEngine) sanitizeMovieFilename(s string) string {
 	s = regexp.MustCompile(`[^a-zA-Z0-9._-]`).ReplaceAllString(s, "_")
 	s = regexp.MustCompile(`_+`).ReplaceAllString(s, "_")
 	return strings.Trim(s, "_")
+}
+
+func (e *MovieGoEngine) saveMovieAlternatives(imdbID, title string, streams []MovieStream) {
+	if e.db == nil || len(streams) == 0 || imdbID == "" {
+		return
+	}
+	max := 20
+	if len(streams) < max {
+		max = len(streams)
+	}
+	alts := make([]metadb.TorrentAlternative, 0, max)
+	for i := 0; i < max; i++ {
+		s := streams[i]
+		alts = append(alts, metadb.TorrentAlternative{
+			ContentID:        imdbID,
+			ContentType:      "movie",
+			Rank:             i + 1,
+			Hash:             s.Hash,
+			Title:            s.Title,
+			Size:             int64(s.SizeGB * 1024 * 1024 * 1024),
+			Seeders:          s.Seeders,
+			QualityScore:     s.QualityScore,
+			Status:           "active",
+			LastHealthCheck:  time.Now().Unix(),
+			AvgSpeedKBps:     0,
+			ReplacementCount: 0,
+		})
+	}
+	if err := e.db.SaveAlternativesForContent(imdbID, alts); err != nil {
+		e.logger.Printf("[MovieSync] Warning: failed to save movie alternatives for %s: %v", title, err)
+	}
 }
 
 func (e *MovieGoEngine) resolveIMDB(ctx context.Context, tmdbID int, title string) string {

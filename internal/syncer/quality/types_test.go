@@ -202,8 +202,11 @@ func TestResolveTV_SizeFirst(t *testing.T) {
 	if prof.Include720p == nil || !*prof.Include720p {
 		t.Error("size-first should include 720p")
 	}
-	if prof.PriorityOrder[0] != "720p" {
-		t.Errorf("expected priority_order[0]=720p, got %s", prof.PriorityOrder[0])
+	if prof.Include480p == nil || !*prof.Include480p {
+		t.Error("size-first should include 480p")
+	}
+	if prof.PriorityOrder[0] != "480p" {
+		t.Errorf("expected priority_order[0]=480p, got %s", prof.PriorityOrder[0])
 	}
 }
 

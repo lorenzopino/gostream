@@ -29,12 +29,12 @@ type TorrentReplacer interface {
 
 // Config holds configuration for the offline health checker.
 type Config struct {
-	CheckInterval time.Duration // How often to run the full health check cycle (default 24h)
-	MinSpeedSlow  int64         // KBps threshold between slow and dead (default 100)
-	MinSpeedFast  int64         // KBps threshold between healthy and slow (default 500)
-	MinSeeders    int           // Minimum seeders for healthy classification (default 10)
-	SlowSeeders   int           // Minimum seeders for slow classification (default 5)
-	MaxReplacements int         // Max replacements per cycle to prevent thrashing (default 5)
+	CheckInterval   time.Duration // How often to run the full health check cycle (default 24h)
+	MinSpeedSlow    int64         // KBps threshold between slow and dead (default 100)
+	MinSpeedFast    int64         // KBps threshold between healthy and slow (default 500)
+	MinSeeders      int           // Minimum seeders for healthy classification (default 10)
+	SlowSeeders     int           // Minimum seeders for slow classification (default 5)
+	MaxReplacements int           // Max replacements per cycle to prevent thrashing (default 5)
 }
 
 // DefaultConfig returns a config with sensible defaults.
@@ -135,8 +135,8 @@ func (h *OfflineHealthChecker) runCheck(ctx context.Context) {
 
 		h.checkAndUpdate(ctx, &alt, now)
 
-		// If this was the primary torrent (rank 1) and it's dead, try to replace
-		if alt.Rank == 1 && alt.Status == "dead" {
+		// If this was the primary torrent (rank 1) and it's dead or slow, try to replace.
+		if alt.Rank == 1 && (alt.Status == "dead" || alt.Status == "verified_slow") {
 			if h.tryReplace(ctx, &alt) {
 				replacements++
 			}
@@ -216,7 +216,7 @@ func (h *OfflineHealthChecker) tryReplace(ctx context.Context, dead *metadb.Torr
 		oldSpeed = 1 // Dead torrent, treat as near-zero
 	}
 
-	if !shouldReplaceWithCfg(h.cfg, speed, oldSpeed) {
+	if !shouldReplaceWithCfg(h.cfg, speed, oldSpeed) && !shouldReplaceStreamableWithCfg(h.cfg, dead, next, speed, seeders) {
 		if h.logger != nil {
 			h.logger.Printf("[HealthChecker] Alternative %s: speed=%d KBps (current=%d KBps) — not significant improvement, skipping",
 				next.Title[:min(40, len(next.Title))], speed, oldSpeed)
@@ -281,6 +281,23 @@ func shouldReplaceWithCfg(cfg Config, newSpeed, oldSpeed int64) bool {
 	// Require at least 50% improvement (1.5x)
 	const minImprovement = 1.5
 	return float64(newSpeed) >= float64(oldSpeed)*minImprovement
+}
+
+func shouldReplaceStreamableWithCfg(cfg Config, current, next *metadb.TorrentAlternative, newSpeed int64, newSeeders int) bool {
+	if current == nil || next == nil {
+		return false
+	}
+	if current.Status != "verified_slow" {
+		return false
+	}
+	if current.Size <= 0 || next.Size <= 0 {
+		return false
+	}
+	if newSeeders < cfg.MinSeeders || newSpeed <= cfg.MinSpeedSlow {
+		return false
+	}
+	const meaningfulSizeReduction = 0.80
+	return float64(next.Size) <= float64(current.Size)*meaningfulSizeReduction
 }
 
 // BuildMagnet creates a magnet URI from a hash and title.

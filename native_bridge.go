@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime/debug"
 
 	"gostream/internal/gostorm/torr"
 	"gostream/internal/gostorm/torr/state"
@@ -285,15 +286,30 @@ func (r *NativeReader) startStream(off int64) error {
 		header: make(http.Header),
 	}
 
-	go func() {
-		defer pw.Close()
-		if err := t.Stream(r.fileID, req, resp); err != nil {
-			log.Printf("[NativeReader] Stream error at off=%dMB fileID=%d hash=%s: %v",
-				off/(1024*1024), r.fileID, r.hash[:8], err)
+	go streamTorrentToPipe(pw,
+		fmt.Sprintf("[NativeReader] off=%dMB fileID=%d hash=%s", off/(1024*1024), r.fileID, r.hash[:8]),
+		func() error {
+			return t.Stream(r.fileID, req, resp)
+		})
+
+	return nil
+}
+
+func streamTorrentToPipe(pw *io.PipeWriter, label string, stream func() error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err := fmt.Errorf("%s panic: %v", label, recovered)
+			log.Printf("[NativeBridge] Recovered stream panic: %v\n%s", err, debug.Stack())
+			pw.CloseWithError(err)
 		}
 	}()
 
-	return nil
+	if err := stream(); err != nil {
+		log.Printf("[NativeBridge] Stream error %s: %v", label, err)
+		pw.CloseWithError(err)
+		return
+	}
+	pw.Close()
 }
 
 func (r *NativeReader) closeStream() {
@@ -357,10 +373,11 @@ func (c *NativeClient) FetchBlock(hash string, fileID int, offset int64, p []byt
 		header: make(http.Header),
 	}
 
-	go func() {
-		defer pw.Close()
-		t.Stream(fileID, req, resp)
-	}()
+	go streamTorrentToPipe(pw,
+		fmt.Sprintf("[NativeClient] FetchBlock off=%d fileID=%d hash=%s", offset, fileID, hash[:min(8, len(hash))]),
+		func() error {
+			return t.Stream(fileID, req, resp)
+		})
 
 	// V283-Fix: Ensure io.ReadFull is unblocked if context expires (8s timeout).
 	// Previously, if t.Stream() stalled without closing the pipe, FetchBlock would hang forever.

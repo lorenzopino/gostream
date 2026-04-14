@@ -61,19 +61,33 @@ func (p *MemPiece) WriteAt(b []byte, off int64) (n int, err error) {
 
 func (p *MemPiece) ReadAt(b []byte, off int64) (n int, err error) {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	// Snapshot buffer while holding RLock so we can release before the slow path.
+	buf := p.buffer
+	p.mu.RUnlock()
+
+	// V-busyloop-fix: Buffer absent or truncated at the requested offset means the
+	// piece is corrupt / was evicted mid-stream. Marking it incomplete forces
+	// updatePieceCompletion() to see a state change (true→false) and trigger a
+	// re-download from peers instead of spinning in readOnceAt indefinitely.
+	if buf == nil || int(off) >= len(buf) {
+		p.piece.Complete = false
+		return 0, io.EOF
+	}
 
 	size := len(b)
-	if size+int(off) > len(p.buffer) {
-		size = len(p.buffer) - int(off)
+	if size+int(off) > len(buf) {
+		size = len(buf) - int(off)
 		if size < 0 {
 			size = 0
 		}
 	}
-	if len(p.buffer) < int(off) || len(p.buffer) < int(off)+size {
+	if len(buf) < int(off)+size {
+		// Remaining buffer is genuinely shorter than requested: mark incomplete
+		// so the engine re-fetches this piece rather than looping on EOF.
+		p.piece.Complete = false
 		return 0, io.EOF
 	}
-	n = copy(b, p.buffer[int(off) : int(off)+size][:])
+	n = copy(b, buf[int(off):int(off)+size])
 	atomic.StoreInt64(&p.piece.Accessed, time.Now().Unix())
 	if int64(len(b))+off >= p.piece.Size {
 		// V227: Non-blocking rate-limited cleanup trigger
@@ -83,6 +97,7 @@ func (p *MemPiece) ReadAt(b []byte, off int64) (n int, err error) {
 		}
 	}
 	if n == 0 {
+		p.piece.Complete = false
 		return 0, io.EOF
 	}
 	return n, nil

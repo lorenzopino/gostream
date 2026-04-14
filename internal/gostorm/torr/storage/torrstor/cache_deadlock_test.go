@@ -42,6 +42,7 @@ func TestCacheCleanPiecesNoDeadlock(t *testing.T) {
 		cleanTrigger:  make(chan struct{}, 1),
 		cleanStop:     make(chan struct{}),
 		localPriority: make(map[int]torrenttypes.PiecePriority),
+		pieceInRange:  make([]bool, pieceCount),
 		// torrent is intentionally nil → setLoadPriority / clearPriority are no-ops
 	}
 
@@ -109,6 +110,7 @@ func TestAdaptiveShieldSingleWatchdog(t *testing.T) {
 		cleanTrigger:  make(chan struct{}, 1),
 		cleanStop:     make(chan struct{}),
 		localPriority: make(map[int]torrenttypes.PiecePriority),
+		pieceInRange:  make([]bool, 1),
 	}
 	defer close(c.cleanStop)
 
@@ -162,6 +164,7 @@ func TestMemPieceConcurrentReadWrite(t *testing.T) {
 		cleanTrigger:  make(chan struct{}, 1),
 		cleanStop:     make(chan struct{}),
 		localPriority: make(map[int]torrenttypes.PiecePriority),
+		pieceInRange:  make([]bool, 1),
 	}
 	defer close(c.cleanStop)
 

@@ -72,18 +72,18 @@ type TVSyncStats struct {
 
 // TVEngineConfig holds config for the TV engine.
 type TVEngineConfig struct {
-	GoStormURL    string
-	TMDBAPIKey    string
-	TorrentioURL  string
-	PlexURL       string
-	PlexToken     string
-	PlexTVLib     int
-	TVDir         string
-	StateDir      string
-	LogsDir       string
-	ProwlarrCfg   prowlarr.ConfigProwlarr
-	QualityProfile  quality.TVProfile
-	TMDBDiscovery   tmdb.EndpointConfig
+	GoStormURL     string
+	TMDBAPIKey     string
+	TorrentioURL   string
+	PlexURL        string
+	PlexToken      string
+	PlexTVLib      int
+	TVDir          string
+	StateDir       string
+	LogsDir        string
+	ProwlarrCfg    prowlarr.ConfigProwlarr
+	QualityProfile quality.TVProfile
+	TMDBDiscovery  tmdb.EndpointConfig
 }
 
 // TV thresholds
@@ -123,6 +123,7 @@ var (
 	reTVSeason    = regexp.MustCompile(`\.s\d{2}\.`)
 	reTVSeasonP   = regexp.MustCompile(`\ss\d{2}\s*\(`)
 	reTVSeasonN   = regexp.MustCompile(`[Ss](\d+)`)
+	reTVEpRangeN  = regexp.MustCompile(`(?i)s\d+e(\d+)\s*-\s*e?(\d+)`)
 	reTVSeasonR   = regexp.MustCompile(`\bs(\d{1,2})\s*[-–]\s*s(\d{1,2})\b`)
 	reTVSeasonW   = regexp.MustCompile(`\bseasons?\s*(\d{1,2})\s*[-–]\s*(\d{1,2})\b`)
 	reTVCompleteS = regexp.MustCompile(`(?i)\b(complete\s+series|all\s+seasons|full\s+series)\b`)
@@ -134,7 +135,7 @@ var (
 	reTVSpaces    = regexp.MustCompile(`\s+`)
 	reTVUnders    = regexp.MustCompile(`_+`)
 	reTVYear      = regexp.MustCompile(`\(?(\d{4})\)?`)
-	reTVQuality   = regexp.MustCompile(`\b(2160p|1080p|720p|4k|uhd|hdr|dv|dovi|web|bluray|remux)\b.*`)
+	reTVQuality   = regexp.MustCompile(`\b(2160p|1080p|720p|480p|576p|4k|uhd|sd|hdr|dv|dovi|web|bluray|remux)\b.*`)
 	reTVHashURL   = regexp.MustCompile(`link=([a-f0-9]{40})`)
 )
 
@@ -564,7 +565,7 @@ func (e *TVGoEngine) processShow(ctx context.Context, show tmdb.TVShow) {
 	}
 
 	sort.Slice(streams, func(i, j int) bool {
-		return streams[j].Priority > streams[i].Priority
+		return streams[i].Rank.BetterThan(streams[j].Rank)
 	})
 
 	// V430: Save top 20 filtered streams as Torrent Alternatives Cache (TAC)
@@ -657,6 +658,7 @@ type TVStream struct {
 	Seeders       int
 	SizeGB        float64
 	Priority      int
+	Rank          quality.StreamingRank
 }
 
 func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, showName string, details *tmdb.TVDetail) []TVStream {
@@ -751,7 +753,6 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 	title := s.Title
 	name := s.Name
 	fullText := title + " " + name
-	prof := e.qualityProfile
 
 	// Hash blacklist check
 	if e.isHashBlacklisted(s.InfoHash) {
@@ -769,86 +770,37 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 
 	seeders := e.extractSeeders(title)
 
-	// Min seeders from profile
-	minSeeders := 10
-	if prof.MinSeeders != nil {
-		minSeeders = *prof.MinSeeders
-	}
-	// Only filter by seeders if we have a valid count (some indexers like Pirate Bay don't report it)
-	if seeders > 0 && seeders < minSeeders {
-		return nil
-	}
-
 	is4K := reTV4K.MatchString(fullText)
 	is1080p := reTV1080p.MatchString(fullText) && !reTV720p.MatchString(fullText)
 	is720p := reTV720p.MatchString(fullText) && !is1080p && !is4K
 	is480p := reTV480p.MatchString(fullText) && !is720p && !is1080p && !is4K
-
-	// Check include flags from profile (nil means use default=true)
-	include4K := prof.Include4K == nil || *prof.Include4K
-	include1080p := prof.Include1080p == nil || *prof.Include1080p
-	include720p := prof.Include720p == nil || *prof.Include720p
-	include480p := prof.Include480p == nil || *prof.Include480p
-	if is4K && !include4K {
-		return nil
-	}
-	if is1080p && !include1080p {
-		return nil
-	}
-	if is720p && !include720p {
-		return nil
-	}
-	if is480p && !include480p {
-		return nil
-	}
-
-	if !is4K && !is1080p && !is720p && !is480p {
-		return nil
-	}
-
-	// 4K min seeders from profile
-	min4KSeeders := 10
-	if prof.MinSeeders4K != nil {
-		min4KSeeders = *prof.MinSeeders4K
-	}
-	if is4K && seeders < min4KSeeders {
+	resolution := quality.DetectResolution(fullText)
+	if resolution == quality.ResolutionUnknown {
 		return nil
 	}
 
 	sizeGB := s.SizeGB
+	if sizeGB == 0 {
+		sizeGB = e.extractSizeGB(title)
+	}
 
 	// Check if this is a fullpack BEFORE size filtering
 	isFullpack := e.isFullpack(title)
-
-	// Check size floor/ceiling from profile
-	var floorGB, ceilingGB float64
-	if is4K {
-		floorGB = prof.SizeFloorGB["4k"]
-		ceilingGB = prof.SizeCeilingGB["4k"]
-	} else if is1080p {
-		floorGB = prof.SizeFloorGB["1080p"]
-		ceilingGB = prof.SizeCeilingGB["1080p"]
-	} else if is720p {
-		floorGB = prof.SizeFloorGB["720p"]
-		ceilingGB = prof.SizeCeilingGB["720p"]
-	} else {
-		floorGB = prof.SizeFloorGB["480p"]
-		ceilingGB = prof.SizeCeilingGB["480p"]
+	estimatedEpisodes := 0
+	if isFullpack {
+		estimatedEpisodes = e.estimateEpisodeCount(title)
 	}
-
-	// For fullpacks: only check floor (ceiling applies to individual episodes, not total torrent)
-	// For singles: check both floor and ceiling
-	if ceilingGB > 0 && sizeGB != 0 {
-		if sizeGB < floorGB {
-			return nil
-		}
-		if !isFullpack && sizeGB > ceilingGB {
-			return nil
-		}
-	}
-
-	qualityScore := e.calculateQualityScore(fullText, seeders, is4K, is1080p, is720p, is480p, ceilingGB, sizeGB)
-	if qualityScore == 0 {
+	rank, ok := quality.RankStreamingCandidate(quality.StreamingCandidate{
+		Hash:                  s.InfoHash,
+		Title:                 fullText,
+		MediaType:             quality.MediaTV,
+		Resolution:            resolution,
+		SizeGB:                sizeGB,
+		Seeders:               seeders,
+		IsPack:                isFullpack,
+		EstimatedEpisodeCount: estimatedEpisodes,
+	}, quality.TVStreamingPolicy())
+	if !ok {
 		return nil
 	}
 
@@ -856,20 +808,6 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 	isPartialPack := false
 	if isFullpack {
 		isPartialPack = reTVRange.MatchString(strings.Split(title, "\n")[0])
-	}
-
-	// Fullpack bonus from profile
-	fullpackBonus := 500
-	if prof.FullpackBonus != nil {
-		fullpackBonus = *prof.FullpackBonus
-	}
-	priorityBonus := 0
-	if isFullpack {
-		if isPartialPack {
-			priorityBonus = fullpackBonus / 2
-		} else {
-			priorityBonus = fullpackBonus
-		}
 	}
 
 	return &TVStream{
@@ -880,11 +818,12 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 		Is1080p:       is1080p,
 		Is720p:        is720p,
 		Is480p:        is480p,
-		QualityScore:  qualityScore,
+		QualityScore:  rank.Score,
 		Season:        season,
 		Seeders:       seeders,
 		SizeGB:        sizeGB,
-		Priority:      qualityScore + priorityBonus,
+		Priority:      rank.Score,
+		Rank:          rank,
 	}
 }
 
@@ -965,6 +904,58 @@ func (e *TVGoEngine) isFullpack(title string) bool {
 	return false
 }
 
+func (e *TVGoEngine) estimateEpisodeCount(title string) int {
+	firstLine := strings.Split(title, "\n")[0]
+	if m := reTVEpRangeN.FindStringSubmatch(firstLine); len(m) >= 3 {
+		first, _ := strconv.Atoi(m[1])
+		last, _ := strconv.Atoi(m[2])
+		if last >= first {
+			return last - first + 1
+		}
+	}
+	if matches := reTVMultiEp.FindAllString(firstLine, -1); len(matches) > 1 {
+		return len(matches)
+	}
+	return 10
+}
+
+func (e *TVGoEngine) filterPackVideoFilesByStreamingPolicy(files []FileStat, stream TVStream) []FileStat {
+	var valid []FileStat
+	for _, f := range files {
+		if !e.isVideoFile(f.Path) {
+			continue
+		}
+		if f.Length < tvMinEpisodeSize {
+			continue
+		}
+		resolution := quality.DetectResolution(stream.Title + " " + f.Path)
+		if resolution == quality.ResolutionUnknown {
+			if stream.Is480p {
+				resolution = quality.Resolution480p
+			} else if stream.Is720p {
+				resolution = quality.Resolution720p
+			} else if stream.Is1080p {
+				resolution = quality.Resolution1080p
+			} else {
+				resolution = stream.Rank.Resolution
+			}
+		}
+		sizeGB := float64(f.Length) / 1024 / 1024 / 1024
+		_, ok := quality.RankExactStreamingFile(quality.StreamingCandidate{
+			Hash:       stream.Hash,
+			Title:      stream.Title + " " + f.Path,
+			MediaType:  quality.MediaTV,
+			Resolution: resolution,
+			SizeGB:     sizeGB,
+			Seeders:    stream.Seeders,
+		}, quality.TVStreamingPolicy())
+		if ok {
+			valid = append(valid, f)
+		}
+	}
+	return valid
+}
+
 func (e *TVGoEngine) extractSeason(title string) int {
 	m := reTVSeasonN.FindStringSubmatch(title)
 	if len(m) > 1 {
@@ -1038,15 +1029,7 @@ func (e *TVGoEngine) processFullpack(ctx context.Context, showName string, strea
 		return 0
 	}
 
-	var videoFiles []FileStat
-	for _, f := range info.FileStats {
-		if e.isVideoFile(f.Path) {
-			if f.Length >= tvMinEpisodeSize && f.Length <= tvMaxEpisodeSize {
-				videoFiles = append(videoFiles, f)
-			}
-		}
-	}
-
+	videoFiles := e.filterPackVideoFilesByStreamingPolicy(info.FileStats, stream)
 	if len(videoFiles) == 0 {
 		e.gostorm.RemoveTorrent(ctx, hash)
 		return 0
@@ -1141,6 +1124,20 @@ func (e *TVGoEngine) processSingle(ctx context.Context, showName string, stream 
 	for i := range info.FileStats {
 		f := &info.FileStats[i]
 		if e.isVideoFile(f.Path) && f.Length >= tvMinEpisodeSize {
+			resolution := quality.DetectResolution(stream.Title + " " + f.Path)
+			if resolution == quality.ResolutionUnknown {
+				resolution = stream.Rank.Resolution
+			}
+			if _, ok := quality.RankExactStreamingFile(quality.StreamingCandidate{
+				Hash:       stream.Hash,
+				Title:      stream.Title + " " + f.Path,
+				MediaType:  quality.MediaTV,
+				Resolution: resolution,
+				SizeGB:     float64(f.Length) / 1024 / 1024 / 1024,
+				Seeders:    stream.Seeders,
+			}, quality.TVStreamingPolicy()); !ok {
+				continue
+			}
 			if bestFile == nil || f.Length > bestFile.Length {
 				cp := *f
 				bestFile = &cp
@@ -1506,4 +1503,3 @@ func (e *TVGoEngine) saveTVAlternatives(imdbID, showName, firstAirDate string, s
 		e.logger.Printf("[V430] Saved %d torrent alternatives for %s", len(alts), showName)
 	}
 }
-

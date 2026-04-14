@@ -1,6 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"github.com/hanwen/go-fuse/v2/fuse"
+	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -310,6 +315,42 @@ func TestRelease_ProbeOnlyEvictsAfterClose(t *testing.T) {
 	}
 }
 
+func TestRelease_ProbeOnlyPumpHandleKeepsReadAheadCache(t *testing.T) {
+	oldCache := raCache
+	defer func() { raCache = oldCache }()
+
+	raCache = newReadAheadCache()
+	path := "/path/The_Miniature_Wife_S01E03_b64d753a.mkv"
+	hash := "0123456789abcdef0123456789abcdef01234567"
+
+	shard := raCache.getShard(path)
+	shard.mu.Lock()
+	key := path + ":0"
+	shard.buffers[key] = &RaBuffer{start: 0, end: 16 * 1024, data: make([]byte, 16*1024)}
+	shard.order = []string{key}
+	shard.total = 16 * 1024
+	atomic.AddInt64(&raCache.used, 16*1024)
+	shard.mu.Unlock()
+
+	activePumps.Store(path, &NativePumpState{path: path, refCount: 1})
+	defer activePumps.Delete(path)
+	globalOpenTracker.Inc(hash, path)
+
+	h := &MkvHandle{
+		path:      path,
+		hash:      hash,
+		hasWarmup: true,
+		hasSlot:   true,
+	}
+	atomic.StoreInt64(&h.lastOff, 0)
+
+	_ = h.Release(context.Background())
+
+	if !raCache.Exists(path, 0) {
+		t.Fatal("probe-sized read from a pump-backed handle should keep read-ahead cache for startup retry")
+	}
+}
+
 // ============================================================
 // ScanDetector integration with ReadAheadCache
 // ============================================================
@@ -352,5 +393,30 @@ func TestScanDetector_AtomicInit(t *testing.T) {
 	}
 	if atomic.LoadUint64(&sd.totalReadBytes) != 0 {
 		t.Error("totalReadBytes should start at 0")
+	}
+}
+
+func TestVirtualMkvRootStatfsDoesNotLogAtInfo(t *testing.T) {
+	oldLogger := logger
+	oldConfig := globalConfig
+	oldMetaCache := metaCache
+	defer func() {
+		logger = oldLogger
+		globalConfig = oldConfig
+		metaCache = oldMetaCache
+	}()
+
+	var buf bytes.Buffer
+	logger = log.New(&buf, "", 0)
+	globalConfig.LogLevel = "INFO"
+	metaCache = NewLRUCache(10, time.Minute)
+
+	root := &VirtualMkvRoot{sourcePath: t.TempDir()}
+	var out fuse.StatfsOut
+	if errno := root.Statfs(context.Background(), &out); errno != 0 {
+		t.Fatalf("Statfs returned errno %d", errno)
+	}
+	if strings.Contains(buf.String(), "STATFS") {
+		t.Fatalf("Statfs should not log noisy per-call output at INFO, got: %q", buf.String())
 	}
 }
