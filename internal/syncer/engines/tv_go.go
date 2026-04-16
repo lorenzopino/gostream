@@ -20,10 +20,36 @@ import (
 	"gostream/internal/catalog"
 	"gostream/internal/catalog/tmdb"
 	"gostream/internal/catalog/torrentio"
+	"gostream/internal/config"
 	"gostream/internal/metadb"
 	"gostream/internal/prowlarr"
 	"gostream/internal/syncer/quality"
 )
+
+// TVShowInfo wraps a discovered TV show with metadata about how it was found.
+// This allows the engine to apply different rules based on the source channel.
+type TVShowInfo struct {
+	ID           int    // TMDB show ID
+	Name         string
+	OriginalName string
+	FirstAirDate string
+	Language     string
+	GenreIDs     []int
+	Channel      string // channel name that produced this show
+	SourceMode   string // "discovery" | "manual"
+}
+
+// ToTMDBShow converts TVShowInfo to tmdb.TVShow for compatibility with existing code.
+func (s TVShowInfo) ToTMDBShow() tmdb.TVShow {
+	return tmdb.TVShow{
+		ID:           s.ID,
+		Name:         s.Name,
+		OriginalName: s.OriginalName,
+		FirstAirDate: s.FirstAirDate,
+		Language:     s.Language,
+		GenreIDs:     s.GenreIDs,
+	}
+}
 
 // TVGoEngine is the pure Go implementation of TV sync.
 type TVGoEngine struct {
@@ -51,6 +77,8 @@ type TVGoEngine struct {
 
 	qualityProfile quality.TVProfile
 	tmdbDiscovery  tmdb.EndpointConfig
+	// Channel configuration for this engine instance
+	channel config.TVChannelConfig
 }
 
 // TVEpisodeEntry is a single entry in the TV episode registry.
@@ -84,6 +112,8 @@ type TVEngineConfig struct {
 	ProwlarrCfg    prowlarr.ConfigProwlarr
 	QualityProfile quality.TVProfile
 	TMDBDiscovery  tmdb.EndpointConfig
+	// Channel config for multi-channel support
+	Channel config.TVChannelConfig
 }
 
 // TV thresholds
@@ -173,6 +203,7 @@ func NewTVGoEngine(cfg TVEngineConfig, db *metadb.DB) *TVGoEngine {
 		blacklistFile:    blFile,
 		qualityProfile:   cfg.QualityProfile,
 		tmdbDiscovery:    cfg.TMDBDiscovery,
+		channel:          cfg.Channel,
 	}
 
 	e.registry = e.loadRegistry()
@@ -440,11 +471,82 @@ func (e *TVGoEngine) registerEpisode(key string, score int, hash, path, source s
 	}
 }
 
-func (e *TVGoEngine) discoverShows(ctx context.Context) ([]tmdb.TVShow, error) {
-	if len(e.tmdbDiscovery.Endpoints) > 0 {
-		return e.tmdb.DiscoverTVFromConfig(ctx, e.tmdbDiscovery)
+func (e *TVGoEngine) discoverShows(ctx context.Context) ([]TVShowInfo, error) {
+	switch e.channel.Mode {
+	case "manual":
+		return e.discoverFromManualIDs(ctx, e.channel.TMDBIDs)
+	case "discovery", "":
+		// Default to discovery if no mode specified
+		return e.discoverFromChannel(ctx)
+	default:
+		e.logger.Printf("[TV] unknown channel mode %q for channel %q, skipping", e.channel.Mode, e.channel.Name)
+		return nil, nil
 	}
-	return e.discoverShowsHardcoded(ctx)
+}
+
+// discoverFromChannel runs the existing TMDB discovery logic for this channel's endpoints.
+func (e *TVGoEngine) discoverFromChannel(ctx context.Context) ([]TVShowInfo, error) {
+	var tmdbShows []tmdb.TVShow
+	var err error
+
+	if len(e.tmdbDiscovery.Endpoints) > 0 {
+		tmdbShows, err = e.tmdb.DiscoverTVFromConfig(ctx, e.tmdbDiscovery)
+	} else {
+		tmdbShows, err = e.discoverShowsHardcoded(ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	shows := make([]TVShowInfo, 0, len(tmdbShows))
+	for _, s := range tmdbShows {
+		shows = append(shows, TVShowInfo{
+			ID:           s.ID,
+			Name:         s.Name,
+			OriginalName: s.OriginalName,
+			FirstAirDate: s.FirstAirDate,
+			Language:     s.Language,
+			GenreIDs:     s.GenreIDs,
+			Channel:      e.channel.Name,
+			SourceMode:   "discovery",
+		})
+	}
+	return shows, nil
+}
+
+// discoverFromManualIDs fetches show details directly from TMDB IDs.
+// No discovery filters, blacklist, or provider checks are applied.
+func (e *TVGoEngine) discoverFromManualIDs(ctx context.Context, tmdbIDs []int) ([]TVShowInfo, error) {
+	var shows []TVShowInfo
+
+	for _, tmdbID := range tmdbIDs {
+		details, err := e.tmdb.TVDetails(ctx, tmdbID)
+		if err != nil {
+			e.logger.Printf("[TV] manual channel %q: failed to fetch TMDB ID %d: %v", e.channel.Name, tmdbID, err)
+			continue
+		}
+
+		imdbID, err := e.tmdb.TVExternalIDs(ctx, tmdbID)
+		if err != nil || imdbID == "" {
+			e.logger.Printf("[TV] manual channel %q: no IMDB ID for TMDB %d (%s), skipping", e.channel.Name, tmdbID, details.Name)
+			continue
+		}
+		_ = imdbID // used later in processShow
+
+		shows = append(shows, TVShowInfo{
+			ID:           tmdbID,
+			Name:         details.Name,
+			OriginalName: details.Name,
+			FirstAirDate: details.FirstAirDate,
+			Language:     "",
+			GenreIDs:     nil,
+			Channel:      e.channel.Name,
+			SourceMode:   "manual",
+		})
+	}
+
+	e.logger.Printf("[TV] manual channel %q: resolved %d shows from %d TMDB IDs", e.channel.Name, len(shows), len(tmdbIDs))
+	return shows, nil
 }
 
 // discoverShowsHardcoded is the original hardcoded TMDB discovery logic.
@@ -511,7 +613,7 @@ func (e *TVGoEngine) passesShowFilters(show tmdb.TVShow) bool {
 	return tmdb.HasPremiumProvider(details.WatchProviders)
 }
 
-func (e *TVGoEngine) processShow(ctx context.Context, show tmdb.TVShow) {
+func (e *TVGoEngine) processShow(ctx context.Context, show TVShowInfo) {
 	showName := show.Name
 	if showName == "" {
 		showName = show.OriginalName
@@ -520,8 +622,8 @@ func (e *TVGoEngine) processShow(ctx context.Context, show tmdb.TVShow) {
 		return
 	}
 
-	// Blacklist check at show level
-	if e.isBlacklisted(showName) {
+	// Blacklist check at show level (skip for manual mode)
+	if show.SourceMode != "manual" && e.isBlacklisted(showName) {
 		e.logger.Printf("🚫 Blacklist: skipping show '%s'", showName)
 		return
 	}
@@ -550,9 +652,9 @@ func (e *TVGoEngine) processShow(ctx context.Context, show tmdb.TVShow) {
 		}
 	}
 
-	// If ALL seasons are complete, skip entire show immediately
-	if allComplete && len(completeSeasons) > 0 {
-		e.logger.Printf("Skipping '%s' — all %d seasons complete", showName, len(completeSeasons))
+	// If ALL seasons are complete, skip entire show immediately (controlled per-channel)
+	if e.channel.SkipCompleteSeasons && allComplete && len(completeSeasons) > 0 {
+		e.logger.Printf("[TV] channel %q: skipping '%s' — all %d seasons complete", e.channel.Name, showName, len(completeSeasons))
 		return
 	}
 
@@ -582,38 +684,40 @@ func (e *TVGoEngine) processShow(ctx context.Context, show tmdb.TVShow) {
 		}
 	}
 
-	// Process fullpacks first
-	fpCount := 0
-	for _, s := range streams {
-		if s.IsFullpack {
-			fpCount++
+	// Process fullpacks first (only in discovery mode)
+	if show.SourceMode != "manual" {
+		fpCount := 0
+		for _, s := range streams {
+			if s.IsFullpack {
+				fpCount++
+			}
 		}
-	}
-	e.logger.Printf("  %d fullpacks, %d singles, skippedSeasons=%v", fpCount, len(streams)-fpCount, skippedSeasons)
+		e.logger.Printf("  %d fullpacks, %d singles, skippedSeasons=%v", fpCount, len(streams)-fpCount, skippedSeasons)
 
-	for _, stream := range streams {
-		if !stream.IsFullpack {
-			continue
-		}
-		if skippedSeasons[stream.Season] {
-			continue
-		}
-		if seasonsComplete[stream.Season] {
-			continue
-		}
+		for _, stream := range streams {
+			if !stream.IsFullpack {
+				continue
+			}
+			if skippedSeasons[stream.Season] {
+				continue
+			}
+			if seasonsComplete[stream.Season] {
+				continue
+			}
 
-		t2 := time.Now()
-		count := e.processFullpack(ctx, showName, stream, show.FirstAirDate)
-		e.logger.Printf("    fullpack S%02d: %d created in %v (%s)", stream.Season, count, time.Since(t2).Round(time.Millisecond), stream.Title[:min(60, len(stream.Title))])
-		if count > 0 {
-			created += count
-			seasonsEpCount[stream.Season] += count
-			expected := tmdbSeasonEps[stream.Season]
-			total := seasonsEpCount[stream.Season]
-			if expected > 0 && total >= expected {
-				seasonsComplete[stream.Season] = true
-			} else if !stream.IsPartialPack && expected == 0 && count >= 5 {
-				seasonsComplete[stream.Season] = true
+			t2 := time.Now()
+			count := e.processFullpack(ctx, showName, stream, show.FirstAirDate)
+			e.logger.Printf("    fullpack S%02d: %d created in %v (%s)", stream.Season, count, time.Since(t2).Round(time.Millisecond), stream.Title[:min(60, len(stream.Title))])
+			if count > 0 {
+				created += count
+				seasonsEpCount[stream.Season] += count
+				expected := tmdbSeasonEps[stream.Season]
+				total := seasonsEpCount[stream.Season]
+				if expected > 0 && total >= expected {
+					seasonsComplete[stream.Season] = true
+				} else if !stream.IsPartialPack && expected == 0 && count >= 5 {
+					seasonsComplete[stream.Season] = true
+				}
 			}
 		}
 	}
