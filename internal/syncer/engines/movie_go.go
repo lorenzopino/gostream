@@ -1070,5 +1070,44 @@ func (e *MovieGoEngine) createMKV(path, streamURL string, fileSize int64, magnet
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return false
 	}
-	return os.WriteFile(path, jsonData, 0644) == nil
+	if err := os.WriteFile(path, jsonData, 0644); err != nil {
+		return false
+	}
+
+	// DISABLED: Create companion .nfo file for Jellyfin metadata discovery
+	// e.createMovieNFO(path, imdbID)
+
+	return true
+}
+
+// createMovieNFO writes a minimal .nfo file alongside the movie .mkv virtual file.
+func (e *MovieGoEngine) createMovieNFO(mkvPath, imdbID string) {
+	nfoPath := mkvPath[:len(mkvPath)-4] + ".nfo"
+	var nfoContent string
+	if imdbID != "" {
+		nfoContent = fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <uniqueid type="imdb" default="true">%s</uniqueid>
+</movie>`, imdbID)
+	} else {
+		// Extract title and year from filename: Title_Year_hash.mkv
+		base := filepath.Base(mkvPath)
+		m := reMTitleYear.FindStringSubmatch(base)
+		title := ""
+		year := ""
+		if len(m) >= 3 {
+			title = strings.ReplaceAll(m[1], "_", " ")
+			year = m[2]
+		} else {
+			title = strings.TrimSuffix(base, filepath.Ext(base))
+			title = reMNonWord.ReplaceAllString(strings.ToLower(title), " ")
+			title = strings.TrimSpace(title)
+		}
+		nfoContent = fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>%s</title>
+  <year>%s</year>
+</movie>`, title, year)
+	}
+	os.WriteFile(nfoPath, []byte(nfoContent), 0644)
 }

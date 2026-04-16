@@ -1455,7 +1455,54 @@ func (e *TVGoEngine) createMKV(path, streamURL string, fileSize int64, magnet st
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return false
 	}
-	return os.WriteFile(path, jsonData, 0644) == nil
+	if err := os.WriteFile(path, jsonData, 0644); err != nil {
+		return false
+	}
+
+	// DISABLED: Create companion .nfo file for Jellyfin metadata discovery
+	// e.createNFO(path)
+
+	return true
+}
+
+// createNFO writes a minimal .nfo file alongside the .mkv virtual file.
+// Extracts season/episode from the filename pattern *_S##E##_*.mkv
+func (e *TVGoEngine) createNFO(mkvPath string) {
+	base := filepath.Base(mkvPath)
+	m := reTVFileName.FindStringSubmatch(base)
+	if len(m) < 5 {
+		// Try alternate pattern: *S##E##*
+		m2 := reTVEpNum.FindStringSubmatch(base)
+		if len(m2) < 3 {
+			return
+		}
+		season, _ := strconv.Atoi(m2[1])
+		episode, _ := strconv.Atoi(m2[2])
+		showName := reTVNonWord.ReplaceAllString(reTVQuality.ReplaceAllString(m2[0], ""), "")
+
+		nfoPath := mkvPath[:len(mkvPath)-4] + ".nfo"
+		nfoContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<episodedetails>
+  <title>%s S%02dE%02d</title>
+  <season>%d</season>
+  <episode>%d</episode>
+</episodedetails>`, showName, season, episode, season, episode)
+		os.WriteFile(nfoPath, []byte(nfoContent), 0644)
+		return
+	}
+
+	showName := m[1]
+	season, _ := strconv.Atoi(m[2])
+	episode, _ := strconv.Atoi(m[3])
+
+	nfoPath := mkvPath[:len(mkvPath)-4] + ".nfo"
+	nfoContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<episodedetails>
+  <title>%s S%02dE%02d</title>
+  <season>%d</season>
+  <episode>%d</episode>
+</episodedetails>`, showName, season, episode, season, episode)
+	os.WriteFile(nfoPath, []byte(nfoContent), 0644)
 }
 
 // saveTVAlternatives saves the top 20 filtered streams as Torrent Alternatives Cache entries.
