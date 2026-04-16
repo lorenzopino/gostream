@@ -679,7 +679,7 @@ func (e *TVGoEngine) processShow(ctx context.Context, show TVShowInfo) {
 
 	// Get streams
 	t1 := time.Now()
-	streams := e.getStreams(ctx, imdbID, show.ID, showName, details)
+	streams := e.getStreams(ctx, imdbID, show.ID, showName, details, show.SourceMode)
 	e.logger.Printf("  getStreams: %v (%d streams)", time.Since(t1).Round(time.Millisecond), len(streams))
 	if len(streams) == 0 {
 		return
@@ -739,6 +739,18 @@ func (e *TVGoEngine) processShow(ctx context.Context, show TVShowInfo) {
 				}
 			}
 		}
+	} else {
+		// Manual mode: report how many fullpacks were skipped
+		fpCount := 0
+		singleCount := 0
+		for _, s := range streams {
+			if s.IsFullpack {
+				fpCount++
+			} else {
+				singleCount++
+			}
+		}
+		e.logger.Printf("  manual mode: %d fullpacks skipped, %d singles available", fpCount, singleCount)
 	}
 
 	// Process singles
@@ -784,16 +796,24 @@ type TVStream struct {
 	Rank          quality.StreamingRank
 }
 
-func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, showName string, details *tmdb.TVDetail) []TVStream {
+func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, showName string, details *tmdb.TVDetail, sourceMode string) []TVStream {
 	numSeasons := details.NumberOfSeasons
 	if numSeasons == 0 {
 		numSeasons = 5
 	}
 
-	maxSeasons := 2
-	startSeason := numSeasons - maxSeasons + 1
-	if startSeason < 1 {
+	// For manual mode, fetch ALL seasons; otherwise only last 2
+	var maxSeasons int
+	var startSeason int
+	if sourceMode == "manual" {
+		maxSeasons = numSeasons
 		startSeason = 1
+	} else {
+		maxSeasons = 2
+		startSeason = numSeasons - maxSeasons + 1
+		if startSeason < 1 {
+			startSeason = 1
+		}
 	}
 	endSeason := numSeasons
 
@@ -854,19 +874,38 @@ func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, 
 
 	// Classify
 	var classified []TVStream
+	rejectedLang := 0
+	rejectedRes := 0
+	rejectedQuality := 0
+	rejectedSeason := 0
 	for _, s := range allStreams {
 		c := e.classifyStream(s)
 		if c == nil {
+			// Track rejection reason for diagnostics
+			fullText := s.Title + " " + s.Name
+			if reTVExclLang.MatchString(s.Title) {
+				rejectedLang++
+			} else if quality.DetectResolution(fullText) == quality.ResolutionUnknown {
+				rejectedRes++
+			} else {
+				rejectedQuality++
+			}
 			continue
 		}
 		if c.Season < startSeason || c.Season > endSeason {
+			rejectedSeason++
 			continue
 		}
 		span := e.extractSeasonSpan(c.Title)
 		if span != nil && span[0] < startSeason {
+			rejectedSeason++
 			continue
 		}
 		classified = append(classified, *c)
+	}
+
+	if e.channel.Mode == "manual" {
+		e.logger.Printf("    classify: %d in → %d out (lang=%d, res=%d, quality=%d, season=%d)", len(allStreams), len(classified), rejectedLang, rejectedRes, rejectedQuality, rejectedSeason)
 	}
 
 	return classified
