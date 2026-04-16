@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"gostream/internal/catalog/tmdb"
+	"gostream/internal/config"
 	"gostream/internal/metadb"
 	"gostream/internal/prowlarr"
 	"gostream/internal/syncer/quality"
@@ -32,6 +33,7 @@ type TVSyncerConfig struct {
 	DB            *metadb.DB // V1.7.1: Optional SQLite backend
 	QualityProfile  quality.TVProfile
 	TMDBDiscovery   tmdb.EndpointConfig
+	Channel         config.TVChannelConfig
 }
 
 // NewTVSyncer creates a new Go-based TV syncer.
@@ -65,6 +67,7 @@ func NewTVSyncer(cfg TVSyncerConfig) *TVSyncer {
 		ProwlarrCfg:    cfg.ProwlarrCfg,
 		QualityProfile: cfg.QualityProfile,
 		TMDBDiscovery:  cfg.TMDBDiscovery,
+		Channel:        cfg.Channel,
 	}
 
 	return &TVSyncer{
@@ -72,7 +75,12 @@ func NewTVSyncer(cfg TVSyncerConfig) *TVSyncer {
 	}
 }
 
-func (s *TVSyncer) Name() string { return "tv" }
+func (s *TVSyncer) Name() string {
+	if s.engine.channel.Name != "" {
+		return "tv:" + s.engine.channel.Name
+	}
+	return "tv"
+}
 
 func (s *TVSyncer) Run(ctx context.Context) error {
 	if err := s.engine.Run(ctx); err != nil {
