@@ -3278,6 +3278,7 @@ func main() {
 			MoviesSync:    scheduler.DailyJobConfig(globalConfig.Scheduler.MoviesSync),
 			TVSync:        scheduler.DailyJobConfig(globalConfig.Scheduler.TVSync),
 			WatchlistSync: scheduler.WatchlistSyncConfig(globalConfig.Scheduler.WatchlistSync),
+			// TVChannels will be set after syncers are built
 		}
 
 		statePath := filepath.Join(GetStateDir(), "scheduler_state.json")
@@ -3286,6 +3287,31 @@ func main() {
 
 		// Start midnight log truncation
 		engines.StartLogTruncator(logsDir, backgroundStopChan)
+
+		// Build TV syncers from channel config
+		tvChannels := globalConfig.TMDBDiscovery.TV.Channels
+		var tvChannelsForScheduler []scheduler.TVChannelSchedule
+
+		// Backward compat: if no channels defined, wrap legacy endpoints into a single discovery channel
+		if len(tvChannels) == 0 {
+			legacyTV := globalConfig.TMDBDiscovery.TV
+			if legacyTV != nil && len(legacyTV.Endpoints) > 0 {
+				tvSync := globalConfig.Scheduler.TVSync
+				tvChannels = []config.TVChannelConfig{{
+					Enabled:             true,
+					Name:                "discovery-default",
+					Mode:                "discovery",
+					Schedule: config.ChannelSchedule{
+						Hour:       tvSync.Hour,
+						Minute:     tvSync.Minute,
+						DaysOfWeek: tvSync.DaysOfWeek,
+					},
+					Endpoints:           legacyTV.Endpoints,
+					SkipCompleteSeasons: true,
+				}}
+				logger.Printf("[TV] no channels configured, wrapping legacy endpoints as 'discovery-default'")
+			}
+		}
 
 		syncers := map[string]scheduler.Syncer{
 			"movies": engines.NewMoviesSyncer(engines.MoviesSyncerConfig{
@@ -3304,21 +3330,6 @@ func main() {
 				TMDBDiscovery:      quality.TMDBEndpointGroupFromConfig(safeTMDBGroup(globalConfig.TMDBDiscovery.Movies)),
 				ProwlarrCategories: prowlarrCategoriesForProfile(quality.ResolveMovieProfile(globalConfig.Quality)),
 			}),
-			"tv": engines.NewTVSyncer(engines.TVSyncerConfig{
-				GoStormURL:     globalConfig.GoStormBaseURL,
-				TMDBAPIKey:     globalConfig.TMDBAPIKey,
-				TorrentioURL:   globalConfig.TorrentioURL,
-				PlexURL:        globalConfig.Plex.URL,
-				PlexToken:      globalConfig.Plex.Token,
-				PlexTVLib:      globalConfig.Plex.TVLibraryID,
-				TVDir:          filepath.Join(globalConfig.PhysicalSourcePath, "tv"),
-				StateDir:       GetStateDir(),
-				LogsDir:        logsDir,
-				ProwlarrCfg:    globalConfig.Prowlarr,
-				DB:             stateDB,
-				QualityProfile: quality.ResolveTVProfile(globalConfig.Quality),
-				TMDBDiscovery:  quality.TMDBEndpointGroupFromConfig(safeTMDBGroup(globalConfig.TMDBDiscovery.TV)),
-			}),
 			"watchlist": engines.NewWatchlistSyncer(engines.WatchlistSyncerConfig{
 				GoStormURL:      globalConfig.GoStormBaseURL,
 				TMDBAPIKey:      globalConfig.TMDBAPIKey,
@@ -3333,6 +3344,74 @@ func main() {
 				QualityProfile:  quality.ResolveMovieProfile(globalConfig.Quality),
 			}),
 		}
+
+		// Create a TV syncer for each enabled channel
+		for _, ch := range tvChannels {
+			if !ch.Enabled {
+				logger.Printf("[TV] channel %q disabled, skipping", ch.Name)
+				continue
+			}
+
+			// Build endpoint group for this channel's discovery config
+			endpointGroup := config.TMDBEndpointGroup{Endpoints: ch.Endpoints}
+
+			syncer := engines.NewTVSyncer(engines.TVSyncerConfig{
+				GoStormURL:     globalConfig.GoStormBaseURL,
+				TMDBAPIKey:     globalConfig.TMDBAPIKey,
+				TorrentioURL:   globalConfig.TorrentioURL,
+				PlexURL:        globalConfig.Plex.URL,
+				PlexToken:      globalConfig.Plex.Token,
+				PlexTVLib:      globalConfig.Plex.TVLibraryID,
+				TVDir:          filepath.Join(globalConfig.PhysicalSourcePath, "tv"),
+				StateDir:       GetStateDir(),
+				LogsDir:        logsDir,
+				ProwlarrCfg:    globalConfig.Prowlarr,
+				DB:             stateDB,
+				QualityProfile: quality.ResolveTVProfile(globalConfig.Quality),
+				TMDBDiscovery:  quality.TMDBEndpointGroupFromConfig(endpointGroup),
+				Channel:        ch,
+			})
+			syncers[syncer.Name()] = syncer
+			logger.Printf("[TV] registered channel %q as syncer %q", ch.Name, syncer.Name())
+
+			tvChannelsForScheduler = append(tvChannelsForScheduler, scheduler.TVChannelSchedule{
+				Name:       ch.Name,
+				Enabled:    ch.Enabled,
+				DaysOfWeek: ch.Schedule.DaysOfWeek,
+				Hour:       ch.Schedule.Hour,
+				Minute:     ch.Schedule.Minute,
+			})
+		}
+
+		// If no TV channels were registered, add a fallback legacy "tv" syncer
+		if len(tvChannelsForScheduler) == 0 {
+			logger.Printf("[TV] no TV channels configured, adding legacy fallback")
+			syncers["tv"] = engines.NewTVSyncer(engines.TVSyncerConfig{
+				GoStormURL:     globalConfig.GoStormBaseURL,
+				TMDBAPIKey:     globalConfig.TMDBAPIKey,
+				TorrentioURL:   globalConfig.TorrentioURL,
+				PlexURL:        globalConfig.Plex.URL,
+				PlexToken:      globalConfig.Plex.Token,
+				PlexTVLib:      globalConfig.Plex.TVLibraryID,
+				TVDir:          filepath.Join(globalConfig.PhysicalSourcePath, "tv"),
+				StateDir:       GetStateDir(),
+				LogsDir:        logsDir,
+				ProwlarrCfg:    globalConfig.Prowlarr,
+				DB:             stateDB,
+				QualityProfile: quality.ResolveTVProfile(globalConfig.Quality),
+				TMDBDiscovery:  quality.TMDBEndpointGroupFromConfig(config.TMDBEndpointGroup{}),
+				Channel:        config.TVChannelConfig{Name: "legacy-fallback", Enabled: true, Mode: "discovery"},
+			})
+			tvChannelsForScheduler = append(tvChannelsForScheduler, scheduler.TVChannelSchedule{
+				Name:       "legacy-fallback",
+				Enabled:    true,
+				DaysOfWeek: globalConfig.Scheduler.TVSync.DaysOfWeek,
+				Hour:       globalConfig.Scheduler.TVSync.Hour,
+				Minute:     globalConfig.Scheduler.TVSync.Minute,
+			})
+		}
+
+		schedCfg.TVChannels = tvChannelsForScheduler
 
 		sched := scheduler.New(schedCfg, syncers, statePath)
 
