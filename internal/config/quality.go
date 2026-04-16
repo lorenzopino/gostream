@@ -76,7 +76,7 @@ type TVScoreWeights struct {
 // TMDBDiscoveryConfig holds configurable TMDB discovery endpoints.
 type TMDBDiscoveryConfig struct {
 	Movies *TMDBEndpointGroup `json:"movies,omitempty"`
-	TV     *TMDBEndpointGroup `json:"tv,omitempty"`
+	TV     *TVDiscoveryConfig `json:"tv,omitempty"`
 }
 
 // TMDBEndpointGroup holds a list of discovery endpoints.
@@ -131,4 +131,31 @@ type TMDBEndpoint struct {
 
 	// Trending endpoint
 	TimeWindow *string `json:"time_window,omitempty"`
+}
+
+// TVChannelConfig represents a single TV sync channel.
+// A channel can operate in "discovery" mode (dynamic TMDB queries)
+// or "manual" mode (explicit list of TMDB IDs).
+type TVChannelConfig struct {
+	Enabled             bool            `json:"enabled"`
+	Name                string          `json:"name"`
+	Mode                string          `json:"mode"` // "discovery" | "manual"
+	Schedule            ChannelSchedule `json:"schedule"`
+	Endpoints           []TMDBEndpoint  `json:"endpoints,omitempty"`           // only for mode=discovery
+	TMDBIDs             []int           `json:"tmdb_ids,omitempty"`            // only for mode=manual
+	SkipCompleteSeasons bool            `json:"skip_complete_seasons"`
+}
+
+// ChannelSchedule defines when a TV channel sync runs.
+type ChannelSchedule struct {
+	Hour       int   `json:"hour"`
+	Minute     int   `json:"minute"`
+	DaysOfWeek []int `json:"days_of_week"`
+}
+
+// TVDiscoveryConfig wraps the channels array under tmdb_discovery.tv.
+// It supports both legacy endpoints (for backward compat) and new channels.
+type TVDiscoveryConfig struct {
+	Endpoints []TMDBEndpoint    `json:"endpoints,omitempty"` // legacy, backward compat
+	Channels  []TVChannelConfig `json:"channels,omitempty"`  // new multi-channel
 }
