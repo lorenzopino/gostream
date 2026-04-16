@@ -51,7 +51,32 @@
       "endpoints": []
     },
     "tv": {
-      "endpoints": []
+      "channels": [
+        {
+          "enabled": false,
+          "name": "discovery-default",
+          "mode": "discovery",
+          "schedule": {
+            "hour": 3,
+            "minute": 0,
+            "days_of_week": [1, 2, 3, 4, 5, 6, 0]
+          },
+          "endpoints": [],
+          "skip_complete_seasons": true
+        },
+        {
+          "enabled": true,
+          "name": "lost-friends",
+          "mode": "manual",
+          "schedule": {
+            "hour": 4,
+            "minute": 0,
+            "days_of_week": [1, 3, 5]
+          },
+          "tmdb_ids": [4607, 1668],
+          "skip_complete_seasons": false
+        }
+      ]
     }
   }
 }
