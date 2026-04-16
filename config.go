@@ -25,6 +25,9 @@ type (
 	TMDBDiscoveryConfig   = config.TMDBDiscoveryConfig
 	TMDBEndpointGroup     = config.TMDBEndpointGroup
 	TMDBEndpoint          = config.TMDBEndpoint
+	TVChannelConfig       = config.TVChannelConfig
+	ChannelSchedule       = config.ChannelSchedule
+	TVDiscoveryConfig     = config.TVDiscoveryConfig
 )
 
 // DailyJobConfig: task that can run on specific days of the week.
