@@ -315,6 +315,17 @@ func (s *Scheduler) updateNextRuns() {
 			if s.cfg.WatchlistSync.Enabled && s.cfg.WatchlistSync.IntervalHours > 0 {
 				next = state.LastRun.Add(time.Duration(s.cfg.WatchlistSync.IntervalHours) * time.Hour)
 			}
+		default:
+			// Handle tv:* channel jobs
+			if strings.HasPrefix(name, "tv:") {
+				channelName := strings.TrimPrefix(name, "tv:")
+				for _, ch := range s.cfg.TVChannels {
+					if ch.Name == channelName {
+						next = nextRunTime(ch.Enabled, ch.DaysOfWeek, ch.Hour, ch.Minute)
+						break
+					}
+				}
+			}
 		}
 
 		if !next.Equal(state.NextRun) {
