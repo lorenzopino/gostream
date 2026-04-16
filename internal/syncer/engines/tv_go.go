@@ -35,8 +35,10 @@ type TVShowInfo struct {
 	FirstAirDate string
 	Language     string
 	GenreIDs     []int
-	Channel      string // channel name that produced this show
-	SourceMode   string // "discovery" | "manual"
+	Channel      string  // channel name that produced this show
+	SourceMode   string  // "discovery" | "manual"
+	IMDBID       string  // pre-resolved IMDB ID (manual mode only; discovery mode resolves in processShow)
+	NumSeasons   int     // pre-fetched season count (manual mode only)
 }
 
 // ToTMDBShow converts TVShowInfo to tmdb.TVShow for compatibility with existing code.
@@ -531,7 +533,6 @@ func (e *TVGoEngine) discoverFromManualIDs(ctx context.Context, tmdbIDs []int) (
 			e.logger.Printf("[TV] manual channel %q: no IMDB ID for TMDB %d (%s), skipping", e.channel.Name, tmdbID, details.Name)
 			continue
 		}
-		_ = imdbID // used later in processShow
 
 		shows = append(shows, TVShowInfo{
 			ID:           tmdbID,
@@ -542,6 +543,8 @@ func (e *TVGoEngine) discoverFromManualIDs(ctx context.Context, tmdbIDs []int) (
 			GenreIDs:     nil,
 			Channel:      e.channel.Name,
 			SourceMode:   "manual",
+			IMDBID:       imdbID,
+			NumSeasons:   details.NumberOfSeasons,
 		})
 	}
 
@@ -629,14 +632,30 @@ func (e *TVGoEngine) processShow(ctx context.Context, show TVShowInfo) {
 	}
 
 	t0 := time.Now()
-	imdbID, err := e.tmdb.TVExternalIDs(ctx, show.ID)
-	if err != nil || imdbID == "" {
-		return
-	}
 
-	details, err := e.tmdb.TVDetails(ctx, show.ID)
-	if err != nil {
-		return
+	// Use pre-resolved IMDB ID and details for manual mode (avoid redundant API calls)
+	var imdbID string
+	var details *tmdb.TVDetail
+	var err error
+
+	if show.SourceMode == "manual" && show.IMDBID != "" {
+		imdbID = show.IMDBID
+		// For manual mode, we still need details for season info but we pre-stored NumSeasons
+		// Get full details for season data (needed by getCompleteSeasons)
+		details, err = e.tmdb.TVDetails(ctx, show.ID)
+		if err != nil {
+			e.logger.Printf("  TMDB details error for %s: %v", showName, err)
+			return
+		}
+	} else {
+		imdbID, err = e.tmdb.TVExternalIDs(ctx, show.ID)
+		if err != nil || imdbID == "" {
+			return
+		}
+		details, err = e.tmdb.TVDetails(ctx, show.ID)
+		if err != nil {
+			return
+		}
 	}
 	e.logger.Printf("  TMDB lookups: %v", time.Since(t0).Round(time.Millisecond))
 
