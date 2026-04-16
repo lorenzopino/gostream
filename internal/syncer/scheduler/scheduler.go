@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,6 +49,16 @@ type SchedulerConfig struct {
 	MoviesSync    DailyJobConfig
 	TVSync        DailyJobConfig
 	WatchlistSync WatchlistSyncConfig
+	TVChannels    []TVChannelSchedule // Per-channel schedules (new)
+}
+
+// TVChannelSchedule holds the schedule for a single TV channel.
+type TVChannelSchedule struct {
+	Name       string
+	Enabled    bool
+	DaysOfWeek []int
+	Hour       int
+	Minute     int
 }
 
 // DailyJobConfig mirrors config.go.
@@ -148,6 +159,13 @@ func (s *Scheduler) Status() map[string]JobState {
 	return s.state.Status()
 }
 
+// UpdateTVChannels sets the per-channel schedule list.
+func (s *Scheduler) UpdateTVChannels(channels []TVChannelSchedule) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.TVChannels = channels
+}
+
 func (s *Scheduler) tick() {
 	for name, syncer := range s.jobs {
 		jt := s.state.Tracker(name)
@@ -171,17 +189,29 @@ func (s *Scheduler) shouldRun(name string, state JobState) bool {
 
 	switch name {
 	case "movies":
-		return s.shouldRunDaily(state, s.cfg.MoviesSync.Enabled, s.cfg.MoviesSync.DaysOfWeek, s.cfg.MoviesSync.Hour, s.cfg.MoviesSync.Minute)
+		return s.shouldRunDaily(name, state, s.cfg.MoviesSync.Enabled, s.cfg.MoviesSync.DaysOfWeek, s.cfg.MoviesSync.Hour, s.cfg.MoviesSync.Minute)
 	case "tv":
-		return s.shouldRunDaily(state, s.cfg.TVSync.Enabled, s.cfg.TVSync.DaysOfWeek, s.cfg.TVSync.Hour, s.cfg.TVSync.Minute)
+		// Legacy single TV job
+		return s.shouldRunDaily(name, state, s.cfg.TVSync.Enabled, s.cfg.TVSync.DaysOfWeek, s.cfg.TVSync.Hour, s.cfg.TVSync.Minute)
 	case "watchlist":
-		return s.shouldRunInterval(state, s.cfg.WatchlistSync.Enabled, s.cfg.WatchlistSync.IntervalHours)
+		return s.shouldRunInterval(name, state, s.cfg.WatchlistSync.Enabled, s.cfg.WatchlistSync.IntervalHours)
+	default:
+		// Handle tv:* channel jobs
+		if strings.HasPrefix(name, "tv:") {
+			channelName := strings.TrimPrefix(name, "tv:")
+			for _, ch := range s.cfg.TVChannels {
+				if ch.Name == channelName {
+					return s.shouldRunDaily(name, state, ch.Enabled, ch.DaysOfWeek, ch.Hour, ch.Minute)
+				}
+			}
+			// Fallback: legacy TVSync config if channel not found in TVChannels
+			return s.shouldRunDaily(name, state, s.cfg.TVSync.Enabled, s.cfg.TVSync.DaysOfWeek, s.cfg.TVSync.Hour, s.cfg.TVSync.Minute)
+		}
+		return false
 	}
-
-	return false
 }
 
-func (s *Scheduler) shouldRunDaily(state JobState, enabled bool, daysOfWeek []int, hour, minute int) bool {
+func (s *Scheduler) shouldRunDaily(name string, state JobState, enabled bool, daysOfWeek []int, hour, minute int) bool {
 	if !enabled {
 		return false
 	}
@@ -216,7 +246,7 @@ func (s *Scheduler) shouldRunDaily(state JobState, enabled bool, daysOfWeek []in
 	return true
 }
 
-func (s *Scheduler) shouldRunInterval(state JobState, enabled bool, intervalHours int) bool {
+func (s *Scheduler) shouldRunInterval(name string, state JobState, enabled bool, intervalHours int) bool {
 	if !enabled || intervalHours <= 0 {
 		return false
 	}
