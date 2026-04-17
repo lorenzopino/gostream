@@ -137,6 +137,82 @@ const (
 	tvMaxShowAgeDays   = 180
 )
 
+// showNameMatches checks if the show name appears as a distinct word in the torrent title.
+// Rejects false matches like "Smiling Friends" when searching for "Friends".
+func showNameMatches(torrentTitle, showName string) bool {
+	if showName == "" {
+		return true
+	}
+	// Normalize: replace dots, dashes, underscores, brackets with spaces, then lowercase
+	titleNorm := strings.ToLower(torrentTitle)
+	titleNorm = strings.ReplaceAll(titleNorm, ".", " ")
+	titleNorm = strings.ReplaceAll(titleNorm, "-", " ")
+	titleNorm = strings.ReplaceAll(titleNorm, "_", " ")
+	// Collapse bracket/group markers into single spaces
+	titleNorm = strings.ReplaceAll(titleNorm, "[", " ")
+	titleNorm = strings.ReplaceAll(titleNorm, "]", " ")
+	titleNorm = strings.ReplaceAll(titleNorm, "{", " ")
+	titleNorm = strings.ReplaceAll(titleNorm, "}", " ")
+	titleNorm = strings.ReplaceAll(titleNorm, "(", " ")
+	titleNorm = strings.ReplaceAll(titleNorm, ")", " ")
+	// Collapse multiple spaces
+	for strings.Contains(titleNorm, "  ") {
+		titleNorm = strings.ReplaceAll(titleNorm, "  ", " ")
+	}
+	titleNorm = strings.TrimSpace(titleNorm)
+
+	nameNorm := strings.ToLower(showName)
+	nameNorm = strings.ReplaceAll(nameNorm, ".", " ")
+	nameNorm = strings.ReplaceAll(nameNorm, "-", " ")
+	nameNorm = strings.ReplaceAll(nameNorm, "_", " ")
+	nameNorm = strings.TrimSpace(nameNorm)
+
+	idx := strings.Index(titleNorm, nameNorm)
+	if idx < 0 {
+		return false
+	}
+	// Must be at start or preceded by a space
+	if idx == 0 {
+		return true
+	}
+	prev := titleNorm[idx-1]
+	if prev != ' ' {
+		return false
+	}
+	// Check that show name is followed by a space/end
+	after := idx + len(nameNorm)
+	if after < len(titleNorm) && titleNorm[after] != ' ' {
+		return false
+	}
+	// CRITICAL: reject if there are significant words before the show name
+	// "smiling friends" when searching for "friends" → reject
+	// "[group] friends" when searching for "friends" → accept
+	prefix := titleNorm[:idx]
+	// Remove common release group tags (single words in brackets)
+	prefix = strings.TrimSpace(prefix)
+	// If prefix contains letters, it's likely part of another show name
+	if len(prefix) > 0 {
+		words := strings.Fields(prefix)
+		for _, w := range words {
+			// Skip single-letter words and numbers (likely group tags or year)
+			if len(w) <= 1 {
+				continue
+			}
+			hasAlpha := false
+			for _, c := range w {
+				if c >= 'a' && c <= 'z' {
+					hasAlpha = true
+					break
+				}
+			}
+			if hasAlpha {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 var (
 	reTV4K        = regexp.MustCompile(`(?i)2160p|4k|uhd`)
 	reTV1080p     = regexp.MustCompile(`(?i)1080p`)
@@ -820,7 +896,7 @@ func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, 
 	var allStreams []prowlarr.Stream
 	seenHashes := make(map[string]bool)
 
-	// Prowlarr primary
+	// Prowlarr primary (title without year for max single-episode coverage)
 	if e.prowlarr != nil {
 		tp := time.Now()
 		streams := e.prowlarr.FetchTorrents(imdbID, "series", showName, nil)
@@ -878,12 +954,15 @@ func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, 
 	rejectedRes := 0
 	rejectedQuality := 0
 	rejectedSeason := 0
+	rejectedName := 0
 	for _, s := range allStreams {
-		c := e.classifyStream(s)
+		c := e.classifyStream(s, showName)
 		if c == nil {
 			// Track rejection reason for diagnostics
 			fullText := s.Title + " " + s.Name
-			if reTVExclLang.MatchString(s.Title) {
+			if !showNameMatches(s.Title, showName) {
+				rejectedName++
+			} else if reTVExclLang.MatchString(s.Title) {
 				rejectedLang++
 			} else if quality.DetectResolution(fullText) == quality.ResolutionUnknown {
 				rejectedRes++
@@ -905,13 +984,13 @@ func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, 
 	}
 
 	if e.channel.Mode == "manual" {
-		e.logger.Printf("    classify: %d in → %d out (lang=%d, res=%d, quality=%d, season=%d)", len(allStreams), len(classified), rejectedLang, rejectedRes, rejectedQuality, rejectedSeason)
+		e.logger.Printf("    classify: %d in → %d out (name=%d, lang=%d, res=%d, quality=%d, season=%d)", len(allStreams), len(classified), rejectedName, rejectedLang, rejectedRes, rejectedQuality, rejectedSeason)
 	}
 
 	return classified
 }
 
-func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
+func (e *TVGoEngine) classifyStream(s prowlarr.Stream, showName string) *TVStream {
 	title := s.Title
 	name := s.Name
 	fullText := title + " " + name
@@ -923,6 +1002,12 @@ func (e *TVGoEngine) classifyStream(s prowlarr.Stream) *TVStream {
 
 	// Title blacklist check
 	if e.isBlacklisted(title) {
+		return nil
+	}
+
+	// Reject false matches: "Smiling Friends" when searching for "Friends"
+	// Check that show name appears as a word boundary, not as a suffix of another word
+	if !showNameMatches(title, showName) {
 		return nil
 	}
 
@@ -1273,11 +1358,13 @@ func (e *TVGoEngine) processSingle(ctx context.Context, showName string, stream 
 	magnet := BuildMagnet(stream.Hash, title, DefaultTrackers())
 	hash, err := e.gostorm.AddTorrent(ctx, magnet, title)
 	if err != nil || hash == "" {
+		e.logger.Printf("    single S%02dE%02d: add torrent failed: %v", season, episode, err)
 		return 0
 	}
 
-	info, err := e.gostorm.GetTorrentInfo(ctx, hash, 45)
+	info, err := e.gostorm.GetTorrentInfo(ctx, hash, 20)
 	if err != nil {
+		e.logger.Printf("    single S%02dE%02d: metadata timeout after 20s (%s)", season, episode, stream.Title[:min(60, len(stream.Title))])
 		e.gostorm.RemoveTorrent(ctx, hash)
 		return 0
 	}
@@ -1307,6 +1394,7 @@ func (e *TVGoEngine) processSingle(ctx context.Context, showName string, stream 
 		}
 	}
 	if bestFile == nil {
+		e.logger.Printf("    single S%02dE%02d: no video file passed quality filters (%s)", season, episode, stream.Title[:min(60, len(stream.Title))])
 		e.gostorm.RemoveTorrent(ctx, hash)
 		return 0
 	}
@@ -1329,6 +1417,7 @@ func (e *TVGoEngine) processSingle(ctx context.Context, showName string, stream 
 		return 1
 	}
 
+	e.logger.Printf("    single S%02dE%02d: createMKV failed (%s)", season, episode, epFilename)
 	return 0
 }
 
