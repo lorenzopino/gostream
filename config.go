@@ -152,6 +152,10 @@ type Config struct {
 		LibraryID   int    `json:"library_id"`
 		TVLibraryID int    `json:"tv_library_id"`
 	} `json:"plex"`
+	Jellyfin struct {
+		URL    string `json:"url"`
+		APIKey string `json:"api_key"`
+	} `json:"jellyfin"`
 	TMDBAPIKey   string `json:"tmdb_api_key"`
 	TorrentioURL string `json:"torrentio_url"` // Torrentio base URL (used when Prowlarr is disabled)
 

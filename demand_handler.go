@@ -183,6 +183,11 @@ func runDemandSync(job *DemandJob) {
 		job.CompletedAt = time.Now()
 		logger.Printf("[Demand] job %s completed: status=%s created=%d skipped=%d",
 			job.JobID, job.Status, job.EpisodesCreated, job.EpisodesSkipped)
+
+		// Trigger Jellyfin refresh if item ID is set and episodes were created
+		if job.Status == "completed" && job.JellyfinItemID != "" {
+			triggerJellyfinRefresh(job)
+		}
 	}()
 
 	syncer := buildDemandSyncer(job)
@@ -252,4 +257,54 @@ func countRegistryEpisodes() int {
 		return nil
 	})
 	return count
+}
+
+// triggerJellyfinRefresh asks Jellyfin to re-scan a specific series.
+// This is much faster than a full library scan (2-5s vs minutes).
+func triggerJellyfinRefresh(job *DemandJob) {
+	if job.JellyfinItemID == "" {
+		return
+	}
+
+	// Find Jellyfin URL and API key from global config
+	jellyfinURL := ""
+	jellyfinAPIKey := ""
+
+	// Check if we have Jellyfin config in globalConfig
+	if globalConfig.Jellyfin.URL != "" {
+		jellyfinURL = globalConfig.Jellyfin.URL
+		jellyfinAPIKey = globalConfig.Jellyfin.APIKey
+	}
+
+	if jellyfinURL == "" || jellyfinAPIKey == "" {
+		logger.Printf("[Demand] Jellyfin refresh skipped: no URL or API key configured")
+		return
+	}
+
+	// Build the refresh URL
+	// POST /Items/{ItemId}/Refresh?Recursive=true&ImageRefreshMode=Default&MetadataRefreshMode=Default&ReplaceAllMetadata=false
+	refreshURL := fmt.Sprintf("%s/Items/%s/Refresh?Recursive=true&ImageRefreshMode=Default&MetadataRefreshMode=Default&ReplaceAllMetadata=false",
+		jellyfinURL, job.JellyfinItemID)
+
+	req, err := http.NewRequest("POST", refreshURL, nil)
+	if err != nil {
+		logger.Printf("[Demand] Jellyfin refresh failed: failed to create request: %v", err)
+		return
+	}
+	req.Header.Set("X-Emby-Token", jellyfinAPIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Printf("[Demand] Jellyfin refresh failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		logger.Printf("[Demand] Jellyfin refresh succeeded for item %s", job.JellyfinItemID)
+	} else {
+		logger.Printf("[Demand] Jellyfin refresh returned status %d for item %s", resp.StatusCode, job.JellyfinItemID)
+	}
 }
