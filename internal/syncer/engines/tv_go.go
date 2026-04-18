@@ -779,8 +779,8 @@ func (e *TVGoEngine) processShow(ctx context.Context, show TVShowInfo) {
 		}
 	}
 
-	// Process fullpacks first (only in discovery mode)
-	if show.SourceMode != "manual" {
+	// Process fullpacks first
+	{
 		fpCount := 0
 		for _, s := range streams {
 			if s.IsFullpack {
@@ -815,18 +815,6 @@ func (e *TVGoEngine) processShow(ctx context.Context, show TVShowInfo) {
 				}
 			}
 		}
-	} else {
-		// Manual mode: report how many fullpacks were skipped
-		fpCount := 0
-		singleCount := 0
-		for _, s := range streams {
-			if s.IsFullpack {
-				fpCount++
-			} else {
-				singleCount++
-			}
-		}
-		e.logger.Printf("  manual mode: %d fullpacks skipped, %d singles available", fpCount, singleCount)
 	}
 
 	// Process singles
