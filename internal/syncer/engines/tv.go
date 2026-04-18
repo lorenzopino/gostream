@@ -34,6 +34,7 @@ type TVSyncerConfig struct {
 	QualityProfile  quality.TVProfile
 	TMDBDiscovery   tmdb.EndpointConfig
 	Channel         config.TVChannelConfig
+	JellyfinItemID  string
 }
 
 // NewTVSyncer creates a new Go-based TV syncer.
@@ -54,6 +55,12 @@ func NewTVSyncer(cfg TVSyncerConfig) *TVSyncer {
 		logsDir = filepath.Join(binDir, "logs")
 	}
 
+	// Wire JellyfinItemID into the channel for demand mode
+	ch := cfg.Channel
+	if cfg.JellyfinItemID != "" {
+		ch.JellyfinItemID = cfg.JellyfinItemID
+	}
+
 	engineCfg := TVEngineConfig{
 		GoStormURL:     cfg.GoStormURL,
 		TMDBAPIKey:     cfg.TMDBAPIKey,
@@ -67,7 +74,7 @@ func NewTVSyncer(cfg TVSyncerConfig) *TVSyncer {
 		ProwlarrCfg:    cfg.ProwlarrCfg,
 		QualityProfile: cfg.QualityProfile,
 		TMDBDiscovery:  cfg.TMDBDiscovery,
-		Channel:        cfg.Channel,
+		Channel:        ch,
 	}
 
 	return &TVSyncer{
