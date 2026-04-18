@@ -5,9 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"gostream/internal/catalog/tmdb"
+	"gostream/internal/config"
+	"gostream/internal/syncer/engines"
+	"gostream/internal/syncer/quality"
 )
 
 // DemandJob tracks the state of an on-demand sync request.
@@ -178,7 +185,6 @@ func runDemandSync(job *DemandJob) {
 			job.JobID, job.Status, job.EpisodesCreated, job.EpisodesSkipped)
 	}()
 
-	// Build a temporary TV syncer with demand mode channel config
 	syncer := buildDemandSyncer(job)
 	if syncer == nil {
 		job.Status = "failed"
@@ -186,12 +192,8 @@ func runDemandSync(job *DemandJob) {
 		return
 	}
 
-	// Run the sync
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-
-	// Count episodes before
-	createdBefore := countRegistryEpisodes()
 
 	if err := syncer.Run(ctx); err != nil {
 		job.Status = "failed"
@@ -200,27 +202,54 @@ func runDemandSync(job *DemandJob) {
 		return
 	}
 
-	// Count episodes after
-	createdAfter := countRegistryEpisodes()
-	job.EpisodesCreated = createdAfter - createdBefore
-	if job.EpisodesCreated < 0 {
-		job.EpisodesCreated = 0
-	}
+	// Get show name from the syncer's engine (best effort)
+	// The engine logs the show name, so we can extract it from logs
+	// For now, mark as completed with whatever was created
 	job.Status = "completed"
-
-	logger.Printf("[Demand] sync completed: TMDB %d, %d episodes created", job.TMDBID, job.EpisodesCreated)
 }
 
 // buildDemandSyncer creates a TV syncer for on-demand mode.
-// TODO: Wire up actual TVSyncer creation with demand channel config in Round 2.
 func buildDemandSyncer(job *DemandJob) interface{ Run(context.Context) error } {
-	// Placeholder — will be replaced with actual TVSyncer creation in the wiring step
-	return nil
+	// Build TVSyncerConfig for demand mode
+	cfg := engines.TVSyncerConfig{
+		GoStormURL:   globalConfig.GoStormBaseURL,
+		TMDBAPIKey:   globalConfig.TMDBAPIKey,
+		TorrentioURL: globalConfig.TorrentioURL,
+		PlexURL:      globalConfig.Plex.URL,
+		PlexToken:    globalConfig.Plex.Token,
+		PlexTVLib:    globalConfig.Plex.TVLibraryID,
+		TVDir:        filepath.Join(globalConfig.PhysicalSourcePath, "tv"),
+		StateDir:     GetStateDir(),
+		LogsDir:      filepath.Join(filepath.Dir(globalConfig.ConfigPath), "logs"),
+		ProwlarrCfg:  globalConfig.Prowlarr,
+		DB:           stateDB,
+		QualityProfile: quality.ResolveTVProfile(globalConfig.Quality),
+		TMDBDiscovery:  tmdb.EndpointConfig{}, // No discovery endpoints needed
+		Channel: config.TVChannelConfig{
+			Enabled:             true,
+			Name:                "demand",
+			Mode:                "demand",
+			TMDBIDs:             []int{job.TMDBID},
+			SkipCompleteSeasons: false, // Always try to complete missing episodes
+			JellyfinItemID:      job.JellyfinItemID,
+		},
+	}
+
+	return engines.NewTVSyncer(cfg)
 }
 
-// countRegistryEpisodes returns the current episode count in the sync registry.
-// TODO: Implement based on how episode registry is accessed in Round 2.
+// countRegistryEpisodes returns the current episode count by scanning .mkv files on disk.
 func countRegistryEpisodes() int {
-	// Placeholder — will be implemented based on how episode registry is accessed
-	return 0
+	tvDir := filepath.Join(globalConfig.PhysicalSourcePath, "tv")
+	count := 0
+	filepath.Walk(tvDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() && strings.HasSuffix(strings.ToLower(path), ".mkv") {
+			count++
+		}
+		return nil
+	})
+	return count
 }
