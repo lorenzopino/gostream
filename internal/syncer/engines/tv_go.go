@@ -36,9 +36,10 @@ type TVShowInfo struct {
 	Language     string
 	GenreIDs     []int
 	Channel      string  // channel name that produced this show
-	SourceMode   string  // "discovery" | "manual"
-	IMDBID       string  // pre-resolved IMDB ID (manual mode only; discovery mode resolves in processShow)
-	NumSeasons   int     // pre-fetched season count (manual mode only)
+	SourceMode   string  // "discovery" | "manual" | "demand"
+	IMDBID       string  // pre-resolved IMDB ID (manual/demand mode only)
+	NumSeasons   int     // pre-fetched season count (manual/demand mode only)
+	JellyfinItemID string // Jellyfin ItemId for targeted refresh (demand mode only)
 }
 
 // ToTMDBShow converts TVShowInfo to tmdb.TVShow for compatibility with existing code.
@@ -551,6 +552,8 @@ func (e *TVGoEngine) registerEpisode(key string, score int, hash, path, source s
 
 func (e *TVGoEngine) discoverShows(ctx context.Context) ([]TVShowInfo, error) {
 	switch e.channel.Mode {
+	case "demand":
+		return e.discoverFromDemand(ctx)
 	case "manual":
 		return e.discoverFromManualIDs(ctx, e.channel.TMDBIDs)
 	case "discovery", "":
@@ -628,6 +631,40 @@ func (e *TVGoEngine) discoverFromManualIDs(ctx context.Context, tmdbIDs []int) (
 	return shows, nil
 }
 
+// discoverFromDemand fetches a single show directly by TMDB ID.
+// Used by the on-demand sync endpoint. No discovery filters applied.
+func (e *TVGoEngine) discoverFromDemand(ctx context.Context) ([]TVShowInfo, error) {
+	if len(e.channel.TMDBIDs) == 0 {
+		return nil, fmt.Errorf("demand mode requires at least one TMDB ID")
+	}
+
+	tmdbID := e.channel.TMDBIDs[0]
+
+	details, err := e.tmdb.TVDetails(ctx, tmdbID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch TMDB details for %d: %w", tmdbID, err)
+	}
+
+	imdbID, err := e.tmdb.TVExternalIDs(ctx, tmdbID)
+	if err != nil || imdbID == "" {
+		return nil, fmt.Errorf("resolve IMDB ID for TMDB %d: %w", tmdbID, err)
+	}
+
+	return []TVShowInfo{{
+		ID:             tmdbID,
+		Name:           details.Name,
+		OriginalName:   details.Name,
+		FirstAirDate:   details.FirstAirDate,
+		Language:       "",
+		GenreIDs:       nil,
+		Channel:        e.channel.Name,
+		SourceMode:     "demand",
+		IMDBID:         imdbID,
+		NumSeasons:     details.NumberOfSeasons,
+		JellyfinItemID: e.channel.JellyfinItemID,
+	}}, nil
+}
+
 // discoverShowsHardcoded is the original hardcoded TMDB discovery logic.
 func (e *TVGoEngine) discoverShowsHardcoded(ctx context.Context) ([]tmdb.TVShow, error) {
 	cutoff := time.Now().AddDate(0, 0, -tvMaxShowAgeDays).Format("2006-01-02")
@@ -701,22 +738,22 @@ func (e *TVGoEngine) processShow(ctx context.Context, show TVShowInfo) {
 		return
 	}
 
-	// Blacklist check at show level (skip for manual mode)
-	if show.SourceMode != "manual" && e.isBlacklisted(showName) {
+	// Blacklist check at show level (skip for manual and demand mode)
+	if show.SourceMode != "manual" && show.SourceMode != "demand" && e.isBlacklisted(showName) {
 		e.logger.Printf("🚫 Blacklist: skipping show '%s'", showName)
 		return
 	}
 
 	t0 := time.Now()
 
-	// Use pre-resolved IMDB ID and details for manual mode (avoid redundant API calls)
+	// Use pre-resolved IMDB ID and details for manual/demand mode (avoid redundant API calls)
 	var imdbID string
 	var details *tmdb.TVDetail
 	var err error
 
-	if show.SourceMode == "manual" && show.IMDBID != "" {
+	if (show.SourceMode == "manual" || show.SourceMode == "demand") && show.IMDBID != "" {
 		imdbID = show.IMDBID
-		// For manual mode, we still need details for season info but we pre-stored NumSeasons
+		// For manual/demand mode, we still need details for season info but we pre-stored NumSeasons
 		// Get full details for season data (needed by getCompleteSeasons)
 		details, err = e.tmdb.TVDetails(ctx, show.ID)
 		if err != nil {
@@ -866,10 +903,10 @@ func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, 
 		numSeasons = 5
 	}
 
-	// For manual mode, fetch ALL seasons; otherwise only last 2
+	// For manual/demand mode, fetch ALL seasons; otherwise only last 2
 	var maxSeasons int
 	var startSeason int
-	if sourceMode == "manual" {
+	if sourceMode == "manual" || sourceMode == "demand" {
 		maxSeasons = numSeasons
 		startSeason = 1
 	} else {

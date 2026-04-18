@@ -135,15 +135,16 @@ type TMDBEndpoint struct {
 
 // TVChannelConfig represents a single TV sync channel.
 // A channel can operate in "discovery" mode (dynamic TMDB queries)
-// or "manual" mode (explicit list of TMDB IDs).
+// or "manual" mode (explicit list of TMDB IDs) or "demand" mode (on-demand single series).
 type TVChannelConfig struct {
 	Enabled             bool            `json:"enabled"`
 	Name                string          `json:"name"`
-	Mode                string          `json:"mode"` // "discovery" | "manual"
+	Mode                string          `json:"mode"` // "discovery" | "manual" | "demand"
 	Schedule            ChannelSchedule `json:"schedule"`
 	Endpoints           []TMDBEndpoint  `json:"endpoints,omitempty"`           // only for mode=discovery
-	TMDBIDs             []int           `json:"tmdb_ids,omitempty"`            // only for mode=manual
+	TMDBIDs             []int           `json:"tmdb_ids,omitempty"`            // only for mode=manual or mode=demand
 	SkipCompleteSeasons bool            `json:"skip_complete_seasons"`
+	JellyfinItemID      string          `json:"jellyfin_item_id,omitempty"` // for demand mode refresh
 }
 
 // ChannelSchedule defines when a TV channel sync runs.
