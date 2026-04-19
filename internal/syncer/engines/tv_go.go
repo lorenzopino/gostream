@@ -182,8 +182,53 @@ func showNameMatches(torrentTitle, showName string) bool {
 	}
 	// Check that show name is followed by a space/end
 	after := idx + len(nameNorm)
-	if after < len(titleNorm) && titleNorm[after] != ' ' {
-		return false
+	if after < len(titleNorm) {
+		nextChar := titleNorm[after]
+		if nextChar != ' ' {
+			return false
+		}
+		// Check that no significant word follows the show name
+		// "lost in space" when searching for "lost" → reject
+		// "lost s01e01" when searching for "lost" → accept
+		suffix := titleNorm[after:]
+		suffixWords := strings.Fields(suffix)
+		for _, w := range suffixWords {
+			// Skip single-letter words, numbers, and common release tags
+			if len(w) <= 2 {
+				continue
+			}
+			// Skip season/episode patterns (s01, e02, s01e02, etc.)
+			if matched, _ := regexp.MatchString(`^[se]\d+`, w); matched {
+				continue
+			}
+			// Skip year patterns (1994, 2004, etc.)
+			if matched, _ := regexp.MatchString(`^\(\d{4}\)$|^[\[\(]?\d{4}[\]\)]?$`, w); matched {
+				continue
+			}
+			// Skip quality tags (720p, 1080p, webrip, x264, etc.)
+			commonTags := []string{"web", "webrip", "web-dl", "bluray", "bdrip", "hdtv", "dvdrip", "dvd", "x264", "x265", "h264", "h265", "hevc", "avc", "aac", "ac3", "dts", "dd5", "5.1", "7.1", "2.0", "10bit", "8bit", "1080p", "720p", "480p", "2160p", "4k", "hdr", "sdr", "dolby", "vision", "dv", "atmos", "truehd", "ma", "core", "complete", "comp", "series", "season", "saison", "pack", "collection", "remaster", "remastered", "extended", "uncut", "directors", "directors.cut", "theatrical", "cut", "edition", "final", "special", "anniversary", "remux", "internal", "proper", "repack", "rerip", "dirfix", "nfofix", "proper"}
+			isCommonTag := false
+			for _, tag := range commonTags {
+				if w == tag {
+					isCommonTag = true
+					break
+				}
+			}
+			if isCommonTag {
+				continue
+			}
+			// If it's a real word (not a tag, not S/E pattern, not year) → reject
+			hasAlpha := false
+			for _, c := range w {
+				if c >= 'a' && c <= 'z' {
+					hasAlpha = true
+					break
+				}
+			}
+			if hasAlpha {
+				return false
+			}
+		}
 	}
 	// CRITICAL: reject if there are significant words before the show name
 	// "smiling friends" when searching for "friends" → reject
@@ -921,10 +966,20 @@ func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, 
 	var allStreams []prowlarr.Stream
 	seenHashes := make(map[string]bool)
 
-	// Prowlarr primary (title without year for max single-episode coverage)
+	// Build search query with year to reduce false matches (e.g. "Lost 2004" vs "Lost in Space 2018")
+	year := ""
+	if len(details.FirstAirDate) >= 4 {
+		year = details.FirstAirDate[:4]
+	}
+	searchTitle := showName
+	if year != "" {
+		searchTitle = showName + " (" + year + ")"
+	}
+
+	// Prowlarr primary (title + year for precision)
 	if e.prowlarr != nil {
 		tp := time.Now()
-		streams := e.prowlarr.FetchTorrents(imdbID, "series", showName, nil)
+		streams := e.prowlarr.FetchTorrents(imdbID, "series", searchTitle, nil)
 		for _, s := range streams {
 			h := strings.ToLower(s.InfoHash)
 			if h != "" && !seenHashes[h] {
@@ -932,7 +987,7 @@ func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, 
 				allStreams = append(allStreams, s)
 			}
 		}
-		e.logger.Printf("    Prowlarr: %d streams in %v", len(allStreams), time.Since(tp).Round(time.Millisecond))
+		e.logger.Printf("    Prowlarr: %d streams for %q in %v", len(allStreams), searchTitle, time.Since(tp).Round(time.Millisecond))
 	}
 
 	// Torrentio fallback
@@ -1303,6 +1358,21 @@ func (e *TVGoEngine) processFullpack(ctx context.Context, showName string, strea
 
 	videoFiles := e.filterPackVideoFilesByStreamingPolicy(info.FileStats, stream)
 	if len(videoFiles) == 0 {
+		e.logger.Printf("    fullpack: 0 video files passed filters (%d total files, %s)", len(info.FileStats), stream.Title[:min(60, len(stream.Title))])
+		// Log first few files for debugging
+		for i, f := range info.FileStats {
+			if i >= 5 {
+				break
+			}
+			res := quality.DetectResolution(stream.Title + " " + f.Path)
+			sizeGB := float64(f.Length) / 1024 / 1024 / 1024
+			_, ok := quality.RankExactStreamingFile(quality.StreamingCandidate{
+				Hash: stream.Hash, Title: stream.Title + " " + f.Path,
+				MediaType: quality.MediaTV, Resolution: res,
+				SizeGB: sizeGB, Seeders: stream.Seeders,
+			}, quality.TVStreamingPolicy())
+			e.logger.Printf("      file[%d]: %s (%.2fGB, res=%v, ok=%v)", i, filepath.Base(f.Path), sizeGB, res, ok)
+		}
 		e.gostorm.RemoveTorrent(ctx, hash)
 		return 0
 	}
