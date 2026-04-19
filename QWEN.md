@@ -310,6 +310,35 @@ This project is indexed by GitNexus. Before making code changes:
 3. Use `gitnexus_detect_changes()` before committing
 4. Reindex after significant changes: `npx gitnexus analyze`
 
+## Hippo Memory — Persistent Session Memory
+
+This project uses [Hippo Memory](https://github.com/kitfunso/hippo-memory) for biologically-inspired persistent memory across sessions.
+
+### Automatic Hooks (handled by `.qwen/settings.json`)
+- **SessionStart**: `hippo last-sleep` — loads consolidated memories from previous session
+- **SessionEnd**: `hippo session-end` — consolidates memories, sleeps, and learns from transcript
+
+### Manual Commands (use during session)
+| Command | When to use |
+|---------|-------------|
+| `hippo context --auto` | Load relevant memories before starting a task |
+| `hippo recall "query" --budget 2000` | Search for specific lessons |
+| `hippo remember "lesson" --tag error` | Store a learned lesson (use `--tag error` for errors) |
+| `hippo outcome --good` | Previous recall was helpful |
+| `hippo outcome --bad` | Previous recall was irrelevant |
+| `hippo status` | Check memory health |
+| `hippo conflicts` | Check for contradictory memories |
+| `hippo decide "decision" --context "reason"` | Record architectural decisions (90-day half-life) |
+
+### Rules
+- When you learn something important during a session → `hippo remember "..."`
+- When an error occurs → `hippo remember "error details" --error --tag error`
+- Before starting a non-trivial task → `hippo context --auto --budget 1500`
+- When resolving a conflict → `hippo resolve <conflict_id> --keep <memory_id>`
+
+<!-- hippo:start -->
+<!-- hippo:end -->
+
 ## External Dependencies
 
 - **TMDB API**: Movie/TV metadata (requires API key)
