@@ -144,31 +144,38 @@ func showNameMatches(torrentTitle, showName string) bool {
 	if showName == "" {
 		return true
 	}
-	// Normalize: replace dots, dashes, underscores, brackets with spaces, then lowercase
-	titleNorm := strings.ToLower(torrentTitle)
-	titleNorm = strings.ReplaceAll(titleNorm, ".", " ")
-	titleNorm = strings.ReplaceAll(titleNorm, "-", " ")
-	titleNorm = strings.ReplaceAll(titleNorm, "_", " ")
-	// Collapse bracket/group markers into single spaces
-	titleNorm = strings.ReplaceAll(titleNorm, "[", " ")
-	titleNorm = strings.ReplaceAll(titleNorm, "]", " ")
-	titleNorm = strings.ReplaceAll(titleNorm, "{", " ")
-	titleNorm = strings.ReplaceAll(titleNorm, "}", " ")
-	titleNorm = strings.ReplaceAll(titleNorm, "(", " ")
-	titleNorm = strings.ReplaceAll(titleNorm, ")", " ")
-	// Collapse multiple spaces
-	for strings.Contains(titleNorm, "  ") {
-		titleNorm = strings.ReplaceAll(titleNorm, "  ", " ")
+	// Normalize: remove apostrophes, replace separators with spaces, lowercase
+	normalize := func(s string) string {
+		s = strings.ToLower(s)
+		s = strings.ReplaceAll(s, "'", "")   // handmaid's → handmaids
+		s = strings.ReplaceAll(s, "'", "")  // also handle unicode apostrophe
+		s = strings.ReplaceAll(s, ".", " ")
+		s = strings.ReplaceAll(s, "-", " ")
+		s = strings.ReplaceAll(s, "_", " ")
+		s = strings.ReplaceAll(s, "[", " ")
+		s = strings.ReplaceAll(s, "]", " ")
+		s = strings.ReplaceAll(s, "{", " ")
+		s = strings.ReplaceAll(s, "}", " ")
+		s = strings.ReplaceAll(s, "(", " ")
+		s = strings.ReplaceAll(s, ")", " ")
+		for strings.Contains(s, "  ") {
+			s = strings.ReplaceAll(s, "  ", " ")
+		}
+		return strings.TrimSpace(s)
 	}
-	titleNorm = strings.TrimSpace(titleNorm)
 
-	nameNorm := strings.ToLower(showName)
-	nameNorm = strings.ReplaceAll(nameNorm, ".", " ")
-	nameNorm = strings.ReplaceAll(nameNorm, "-", " ")
-	nameNorm = strings.ReplaceAll(nameNorm, "_", " ")
-	nameNorm = strings.TrimSpace(nameNorm)
+	titleNorm := normalize(torrentTitle)
+	nameNorm := normalize(showName)
+
+	// Also try without "the " prefix — many torrents drop the article
+	nameNoThe := strings.TrimPrefix(nameNorm, "the ")
+	nameAlt := nameNoThe
 
 	idx := strings.Index(titleNorm, nameNorm)
+	if idx < 0 {
+		// Try without "the" prefix
+		idx = strings.Index(titleNorm, nameAlt)
+	}
 	if idx < 0 {
 		return false
 	}
@@ -966,28 +973,37 @@ func (e *TVGoEngine) getStreams(ctx context.Context, imdbID string, tmdbID int, 
 	var allStreams []prowlarr.Stream
 	seenHashes := make(map[string]bool)
 
-	// Build search query with year to reduce false matches (e.g. "Lost 2004" vs "Lost in Space 2018")
+	// Build search query with year to reduce false matches
 	year := ""
 	if len(details.FirstAirDate) >= 4 {
 		year = details.FirstAirDate[:4]
 	}
-	searchTitle := showName
+
+	// Prowlarr: try title+year first, then title-only if too few results
+	searchQueries := []string{showName}
 	if year != "" {
-		searchTitle = showName + " (" + year + ")"
+		searchQueries = append([]string{showName + " (" + year + ")"}, searchQueries...)
 	}
 
-	// Prowlarr primary (title + year for precision)
-	if e.prowlarr != nil {
-		tp := time.Now()
-		streams := e.prowlarr.FetchTorrents(imdbID, "series", searchTitle, nil)
-		for _, s := range streams {
-			h := strings.ToLower(s.InfoHash)
-			if h != "" && !seenHashes[h] {
-				seenHashes[h] = true
-				allStreams = append(allStreams, s)
+	for _, searchTitle := range searchQueries {
+		if e.prowlarr != nil {
+			tp := time.Now()
+			streams := e.prowlarr.FetchTorrents(imdbID, "series", searchTitle, nil)
+			newCount := 0
+			for _, s := range streams {
+				h := strings.ToLower(s.InfoHash)
+				if h != "" && !seenHashes[h] {
+					seenHashes[h] = true
+					allStreams = append(allStreams, s)
+					newCount++
+				}
 			}
+			e.logger.Printf("    Prowlarr (%q): %d streams (%d new) in %v", searchTitle, len(streams), newCount, time.Since(tp).Round(time.Millisecond))
 		}
-		e.logger.Printf("    Prowlarr: %d streams for %q in %v", len(allStreams), searchTitle, time.Since(tp).Round(time.Millisecond))
+		// If we already have enough results from the year-specific query, skip the generic one
+		if year != "" && len(allStreams) > 20 && searchTitle == showName+" ("+year+")" {
+			break
+		}
 	}
 
 	// Torrentio fallback
