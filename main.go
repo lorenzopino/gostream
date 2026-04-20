@@ -3585,6 +3585,9 @@ func main() {
 
 	logger.Printf("FUSE mounted at %s with VirtualMkvRoot, all systems active", mount)
 
+	// V179: Block macOS Spotlight and Finder scanning to prevent CPU spikes
+	setupSpotlightBlocking(mount, source)
+
 	go smbdWatchdog()
 
 	server.Wait()

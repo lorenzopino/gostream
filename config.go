@@ -183,6 +183,9 @@ type Config struct {
 	// --- State DB (V1.7.1) ---
 	EnableStateDB bool   `json:"enable_state_db"` // default: true
 	StateDBPath   string `json:"state_db_path"`   // default: <STATE>/gostream.db
+
+	// --- macOS Spotlight Blocking (V179) ---
+	DisableSpotlightIndexing bool `json:"disable_spotlight_indexing"` // Creates .metadata_never_index + runs mdutil -d
 }
 
 // Save persists the current configuration to config.json
@@ -244,6 +247,9 @@ func LoadConfig() Config {
 		TelemetryURL:    "https://telemetry.gostream.workers.dev",
 
 		EnableStateDB: true,
+
+		// macOS: Block Spotlight/Finder scanning by default to prevent CPU spikes
+		DisableSpotlightIndexing: true,
 
 		// Legacy Fixed Defaults
 		DefaultFileSize:         30 * 1024 * 1024 * 1024,
@@ -395,6 +401,9 @@ func (c *Config) applyEnvOverrides() {
 		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
 			c.GID = uint32(n)
 		}
+	}
+	if v := os.Getenv("GOSTREAM_DISABLE_SPOTLIGHT"); v == "false" || v == "0" {
+		c.DisableSpotlightIndexing = false
 	}
 }
 
