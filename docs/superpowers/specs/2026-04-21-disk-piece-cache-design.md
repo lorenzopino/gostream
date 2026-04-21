@@ -100,9 +100,30 @@ func (c *Cache) Init() {
     piecesDir := filepath.Join(settings.BTsets.TorrentsSavePath, c.hash.HexString(), "pieces")
     if entries, _ := os.ReadDir(piecesDir); entries != nil {
         for _, entry := range entries {
-            // Parse piece ID from filename
-            // Read file into mmap view
-            // Restore piece data
+            // Parse piece ID from filename (e.g. "42.dat" → ID 42)
+            pieceID, _ := strconv.Atoi(strings.TrimSuffix(entry.Name(), ".dat"))
+            if pieceID < 0 || pieceID >= len(c.pieces) {
+                continue
+            }
+            
+            // Open file and mmap it
+            path := filepath.Join(piecesDir, entry.Name())
+            f, err := os.OpenFile(path, os.O_RDWR, 0644)
+            if err != nil { continue }
+            
+            info, _ := f.Stat()
+            if info.Size() == 0 { f.Close(); continue }
+            
+            // mmap the file
+            data, _ := unix.Mmap(int(f.Fd()), 0, int(info.Size()),
+                unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+            
+            // Restore piece
+            p := c.pieces[pieceID]
+            p.dPiece.file = f
+            p.dPiece.data = data
+            p.dPiece.size = info.Size()
+            p.completed = true
         }
     }
 }
