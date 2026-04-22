@@ -110,3 +110,53 @@ func TestPiece_UsesDiskPiece(t *testing.T) {
 		t.Fatalf("Piece.ReadAt got %q, expected %q", buf[:n], data)
 	}
 }
+
+func TestCache_Init_RestoresPiecesFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	settings.BTsets.TorrentsSavePath = dir
+
+	// Create first cache, write a piece, release (persist to disk)
+	hash1 := mustHashDisk("0102030000000000000000000000000000000000")
+	cache1 := &Cache{
+		pieceLength: 4096,
+		pieces:      make(map[int]*Piece),
+		hash:        hash1,
+		cleanStop:   make(chan struct{}),
+	}
+	cache1.pieces[0] = NewPiece(0, cache1)
+
+	// Write data to piece 0
+	p := cache1.pieces[0]
+	p.WriteAt([]byte("persistent data"), 0)
+	p.dPiece.Release() // persist to disk via DiskPiece directly (skip torrent priority update)
+
+	// Simulate "restart" - create new Cache instance for same hash
+	cache2 := &Cache{
+		pieceLength: 4096,
+		pieces:      make(map[int]*Piece),
+		hash:        hash1,
+		cleanStop:   make(chan struct{}),
+	}
+	cache2.pieces[0] = NewPiece(0, cache2)
+
+	// Init should restore piece 0 from disk
+	cache2.restorePiecesFromDisk()
+
+	if cache2.pieces[0] == nil {
+		t.Fatal("Cache.Init should restore piece 0")
+	}
+
+	if !cache2.pieces[0].dPiece.HasData() {
+		t.Fatal("Restored piece should have data")
+	}
+
+	// Verify data persisted
+	buf := make([]byte, 15)
+	n, err := cache2.pieces[0].ReadAt(buf, 0)
+	if err != nil {
+		t.Fatalf("ReadAt after restore: %v", err)
+	}
+	if string(buf[:n]) != "persistent data" {
+		t.Fatalf("Restored data mismatch: got %q", buf[:n])
+	}
+}

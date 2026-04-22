@@ -4,12 +4,15 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/anacrolix/torrent"
 
+	"golang.org/x/sys/unix"
 	"gostream/internal/gostorm/log"
 	"gostream/internal/gostorm/settings"
 	"gostream/internal/gostorm/torr/storage/state"
@@ -114,6 +117,9 @@ func (c *Cache) Init(info *metainfo.Info, hash metainfo.Hash) {
 		c.pieces[i] = NewPiece(i, c)
 	}
 	c.pieceInRange = make([]bool, c.pieceCount)
+
+	// V-disk: Restore persisted pieces from disk
+	c.restorePiecesFromDisk()
 }
 
 func (c *Cache) SetTorrent(torr *torrent.Torrent) {
@@ -578,4 +584,60 @@ func (c *Cache) GetCapacity() int64 {
 // piecesDir returns the directory where pieces for this cache are stored.
 func (c *Cache) piecesDir() string {
 	return filepath.Join(settings.BTsets.TorrentsSavePath, c.hash.HexString(), "pieces")
+}
+
+// restorePiecesFromDisk scans the pieces directory and restores any persisted pieces.
+func (c *Cache) restorePiecesFromDisk() {
+	piecesDir := c.piecesDir()
+	entries, err := os.ReadDir(piecesDir)
+	if err != nil {
+		return // No pieces dir or empty -- normal cold start
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".dat") {
+			continue
+		}
+
+		idStr := strings.TrimSuffix(name, ".dat")
+		pieceID, err := strconv.Atoi(idStr)
+		if err != nil {
+			continue
+		}
+		if pieceID < 0 || pieceID >= len(c.pieces) {
+			continue
+		}
+
+		p := c.pieces[pieceID]
+		path := filepath.Join(piecesDir, name)
+		f, err := os.OpenFile(path, os.O_RDWR, 0644)
+		if err != nil {
+			continue
+		}
+
+		info, err := f.Stat()
+		if err != nil || info.Size() == 0 {
+			f.Close()
+			continue
+		}
+
+		pieceLen := c.pieceLength
+		data, err := unix.Mmap(int(f.Fd()), 0, int(pieceLen),
+			unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+		if err != nil {
+			f.Close()
+			continue
+		}
+
+		p.dPiece.file = f
+		p.dPiece.data = data
+		p.dPiece.path = path
+		p.dPiece.size = info.Size()
+		p.Size = info.Size()
+		p.Complete = info.Size() >= int64(pieceLen)
+	}
 }
