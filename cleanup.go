@@ -4,9 +4,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
+	"gostream/internal/gostorm/settings"
 	"gostream/internal/gostorm/torr"
 )
 
@@ -278,12 +280,22 @@ func (cm *CleanupManager) runCleanup() {
 		return true
 	})
 
+	// V-disk: Enforce disk cache quota (LRU eviction)
+	if settings.BTsets.DiskCacheQuotaGB > 0 && settings.BTsets.TorrentsSavePath != "" {
+		quotaBytes := settings.BTsets.DiskCacheQuotaGB * 1024 * 1024 * 1024
+		freed := enforceDiskCacheQuota(settings.BTsets.TorrentsSavePath, quotaBytes)
+		if freed > 0 {
+			stats.BytesFreed += freed
+		}
+	}
+
 	// Log only if something was cleaned
 	if stats.DeletedHashesRemoved > 0 || stats.OffsetsRemoved > 0 || stats.ActivitiesRemoved > 0 ||
-		stats.InodeMapPruned > 0 || stats.PlaybackRegistryPruned > 0 || stats.MetadataPruned > 0 || stats.HashesRemoved > 0 {
-		cm.logger.Printf("Cleanup: hashes=%d offsets=%d acts=%d inodes=%d registry=%d meta=%d",
+		stats.InodeMapPruned > 0 || stats.PlaybackRegistryPruned > 0 || stats.MetadataPruned > 0 || stats.HashesRemoved > 0 || stats.BytesFreed > 0 {
+		cm.logger.Printf("Cleanup: hashes=%d offsets=%d acts=%d inodes=%d registry=%d meta=%d freed=%.1fMB",
 			stats.DeletedHashesRemoved, stats.OffsetsRemoved, stats.ActivitiesRemoved,
-			stats.InodeMapPruned, stats.PlaybackRegistryPruned, stats.MetadataPruned)
+			stats.InodeMapPruned, stats.PlaybackRegistryPruned, stats.MetadataPruned,
+			float64(stats.BytesFreed)/1024/1024)
 	}
 }
 
@@ -386,6 +398,7 @@ type CleanupStats struct {
 	PlaybackRegistryPruned int // V170
 	MetadataPruned         int // V238
 	HashesRemoved          int // V238
+	BytesFreed             int64
 }
 
 // Stats returns current cleanup manager statistics
@@ -407,4 +420,94 @@ func (cm *CleanupManager) Stats() CleanupStats {
 		OffsetsTotal:       offsetsTotal,
 		ActivitiesTotal:    activitiesTotal,
 	}
+}
+
+// enforceDiskCacheQuota removes the oldest torrent directories until total size is under quota.
+func enforceDiskCacheQuota(baseDir string, quotaBytes int64) int64 {
+	if quotaBytes <= 0 {
+		return 0
+	}
+
+	totalSize := calculateTotalDirSize(baseDir)
+	if totalSize <= quotaBytes {
+		return 0
+	}
+
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return 0
+	}
+
+	type dirInfo struct {
+		path    string
+		size    int64
+		modTime time.Time
+	}
+
+	var dirs []dirInfo
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		fullPath := filepath.Join(baseDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		sz := dirSize(fullPath)
+		dirs = append(dirs, dirInfo{
+			path:    fullPath,
+			size:    sz,
+			modTime: info.ModTime(),
+		})
+	}
+
+	sort.Slice(dirs, func(i, j int) bool {
+		return dirs[i].modTime.Before(dirs[j].modTime)
+	})
+
+	var freed int64
+	for _, d := range dirs {
+		if totalSize <= quotaBytes {
+			break
+		}
+		if err := os.RemoveAll(d.path); err == nil {
+			freed += d.size
+			totalSize -= d.size
+			log.Printf("[Cleanup] Evicted %s (%.1f MB, mtime=%s)",
+				d.path, float64(d.size)/1024/1024, d.modTime.Format(time.RFC3339))
+		}
+	}
+
+	return freed
+}
+
+// dirSize calculates the total size of all files in a directory tree.
+func dirSize(path string) int64 {
+	var size int64
+	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size
+}
+
+// calculateTotalDirSize returns the total size of all subdirectories in baseDir.
+func calculateTotalDirSize(baseDir string) int64 {
+	var total int64
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return 0
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			total += dirSize(filepath.Join(baseDir, entry.Name()))
+		}
+	}
+	return total
 }

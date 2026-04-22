@@ -2940,6 +2940,11 @@ func main() {
 	// Give engine a moment to init (hash maps etc)
 	time.Sleep(2 * time.Second)
 
+	// Wire disk cache quota from global config into BTsets
+	if settings.BTsets != nil {
+		settings.BTsets.DiskCacheQuotaGB = globalConfig.DiskCacheQuotaGB
+	}
+
 	InitDiskWarmup()
 	go StartRegistryWatchdog(backgroundStopChan)
 	go natpmpLoop(backgroundStopChan, globalConfig.NatPMP, logger)

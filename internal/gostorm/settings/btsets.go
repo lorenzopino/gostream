@@ -22,6 +22,7 @@ type BTSets struct {
 	UseDisk           bool
 	TorrentsSavePath  string
 	RemoveCacheOnDrop bool
+	DiskCacheQuotaGB  int64
 
 	// Torrent
 	ForceEncrypt             bool
@@ -157,6 +158,7 @@ func SetDefaultConfig() {
 	sets.ResponsiveMode = true
 	sets.ShowFSActiveTorr = true
 	sets.StoreSettingsInJson = true
+	sets.DiskCacheQuotaGB = 50
 	BTsets = sets
 	if !ReadOnly {
 		buf, err := json.Marshal(BTsets)

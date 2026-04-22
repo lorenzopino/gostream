@@ -142,6 +142,9 @@ type Config struct {
 	// backward-compatible JSON unmarshal of existing config.json files.
 	WarmupHeadSizeMB int64 `json:"warmup_head_size_mb"`
 
+	// --- Disk Cache Quota ---
+	DiskCacheQuotaGB int64 `json:"disk_cache_quota_gb"` // Disk cache quota for torrent pieces (default: 50)
+
 	// --- NAT-PMP (V228) ---
 	NatPMP NatPMPConfig `json:"natpmp"`
 
@@ -230,6 +233,7 @@ func LoadConfig() Config {
 		MaxCacheEntries:         10000,
 		DiskWarmupQuotaGB:       32,
 		WarmupHeadSizeMB:        64,
+		DiskCacheQuotaGB:        50,
 
 		Scheduler: SchedulerConfig{
 			Enabled:       false, // off by default — won't break installs using cron
