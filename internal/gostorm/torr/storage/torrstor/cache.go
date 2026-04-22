@@ -574,3 +574,8 @@ func (c *Cache) GetCapacity() int64 {
 	}
 	return c.capacity
 }
+
+// piecesDir returns the directory where pieces for this cache are stored.
+func (c *Cache) piecesDir() string {
+	return filepath.Join(settings.BTsets.TorrentsSavePath, c.hash.HexString(), "pieces")
+}

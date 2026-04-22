@@ -52,7 +52,8 @@ type Piece struct {
 	Complete bool  `json:"complete"`
 	Accessed int64 `json:"accessed"`
 
-	mPiece *MemPiece `json:"-"`
+	mPiece   *MemPiece  `json:"-"`
+	dPiece   *DiskPiece `json:"-"`
 
 	cache *Cache `json:"-"`
 }
@@ -63,18 +64,18 @@ func NewPiece(id int, cache *Cache) *Piece {
 		cache: cache,
 	}
 
-	// V256: RAM is always the primary torrent cache.
-	// UseDisk now controls our FUSE-layer disk warmup cache, not native GoStorm piece storage.
-	p.mPiece = NewMemPiece(p)
+	// V330: DiskPiece is now the default backing for torrent data.
+	// Provides persistence across restarts and reduces RAM pressure.
+	p.dPiece = NewDiskPiece(p, cache.piecesDir())
 	return p
 }
 
 func (p *Piece) WriteAt(b []byte, off int64) (n int, err error) {
-	return p.mPiece.WriteAt(b, off)
+	return p.dPiece.WriteAt(b, off)
 }
 
 func (p *Piece) ReadAt(b []byte, off int64) (n int, err error) {
-	return p.mPiece.ReadAt(b, off)
+	return p.dPiece.ReadAt(b, off)
 }
 
 func (p *Piece) MarkComplete() error {
@@ -85,13 +86,27 @@ func (p *Piece) MarkComplete() error {
 func (p *Piece) MarkNotComplete() error {
 	p.Complete = false
 
+	// V330: Reset DiskPiece to clear corrupted data and start fresh.
+	if p.dPiece != nil {
+		p.dPiece.Delete()
+		p.dPiece = NewDiskPiece(p, p.cache.piecesDir())
+	}
+
 	// V-evict-guard: buffer nil = pezzo evicted dalla cache, non corruzione da peer.
 	// Evita falsi positivi AdaptiveShield durante eviction sotto pressione RAM.
-	p.mPiece.mu.RLock()
-	hasData := p.mPiece.buffer != nil
-	p.mPiece.mu.RUnlock()
-	if !hasData {
-		return nil
+	// Keep mPiece check for backward compatibility with any residual MemPiece usage.
+	if p.mPiece != nil {
+		p.mPiece.mu.RLock()
+		hasData := p.mPiece.buffer != nil
+		p.mPiece.mu.RUnlock()
+		if !hasData {
+			return nil
+		}
+	} else {
+		// No MemPiece — DiskPiece backend. Check if it has data via HasData().
+		if p.dPiece != nil && !p.dPiece.HasData() {
+			return nil
+		}
 	}
 
 	// V303: Adaptive Responsive Shield
@@ -158,7 +173,9 @@ func (p *Piece) Completion() storage.Completion {
 }
 
 func (p *Piece) Release() {
-	p.mPiece.Release()
+	if p.dPiece != nil {
+		p.dPiece.Release()
+	}
 	if !p.cache.isClosed {
 		p.cache.torrent.Piece(p.Id).SetPriority(torrent.PiecePriorityNone)
 		p.cache.torrent.Piece(p.Id).UpdateCompletion()

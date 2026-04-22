@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anacrolix/torrent/metainfo"
 	torrenttypes "github.com/anacrolix/torrent/types"
 
 	"gostream/internal/gostorm/settings"
@@ -17,11 +18,16 @@ func TestMain(m *testing.M) {
 	// Initialize settings.BTsets to avoid nil dereference in MarkNotComplete/GetAdaptiveShield.
 	if settings.BTsets == nil {
 		settings.BTsets = &settings.BTSets{
-			ResponsiveMode: false,
-			AdaptiveShield: false,
+			ResponsiveMode:   false,
+			AdaptiveShield:   false,
+			TorrentsSavePath: os.TempDir(),
 		}
 	}
 	os.Exit(m.Run())
+}
+
+func mustHash(s string) metainfo.Hash {
+	return metainfo.NewHashFromHex(s)
 }
 
 // ---------------------------------------------------------------------------
@@ -43,12 +49,12 @@ func TestCacheCleanPiecesNoDeadlock(t *testing.T) {
 		cleanStop:     make(chan struct{}),
 		localPriority: make(map[int]torrenttypes.PiecePriority),
 		pieceInRange:  make([]bool, pieceCount),
+		hash:          mustHash("0102030000000000000000000000000000000000"),
 		// torrent is intentionally nil → setLoadPriority / clearPriority are no-ops
 	}
 
 	for i := 0; i < pieceCount; i++ {
-		p := &Piece{Id: i, cache: c, mPiece: &MemPiece{}}
-		p.mPiece.piece = p
+		p := NewPiece(i, c)
 		c.pieces[i] = p
 	}
 
@@ -111,13 +117,13 @@ func TestAdaptiveShieldSingleWatchdog(t *testing.T) {
 		cleanStop:     make(chan struct{}),
 		localPriority: make(map[int]torrenttypes.PiecePriority),
 		pieceInRange:  make([]bool, 1),
+		hash:          mustHash("0102030000000000000000000000000000000000"),
 	}
 	defer close(c.cleanStop)
 
-	p := &Piece{Id: 0, cache: c, mPiece: &MemPiece{}}
-	p.mPiece.piece = p
+	p := NewPiece(0, c)
 	// Pre-allocate buffer so the V-evict-guard (buffer != nil) passes
-	p.mPiece.buffer = make([]byte, pieceLen)
+	p.mPiece = &MemPiece{piece: p, buffer: make([]byte, pieceLen)}
 	c.pieces[0] = p
 
 	baseGoroutines := runtime.NumGoroutine()
@@ -165,11 +171,12 @@ func TestMemPieceConcurrentReadWrite(t *testing.T) {
 		cleanStop:     make(chan struct{}),
 		localPriority: make(map[int]torrenttypes.PiecePriority),
 		pieceInRange:  make([]bool, 1),
+		hash:          mustHash("0102030000000000000000000000000000000000"),
 	}
 	defer close(c.cleanStop)
 
-	p := &Piece{Id: 0, cache: c, mPiece: &MemPiece{}}
-	p.mPiece.piece = p
+	p := NewPiece(0, c)
+	p.mPiece = &MemPiece{piece: p}
 	c.pieces[0] = p
 
 	mp := p.mPiece
