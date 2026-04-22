@@ -115,6 +115,27 @@ func AddTorrent(spec *torrent.TorrentSpec, title, poster string, data string, ca
 	return torr, nil
 }
 
+// AddTorrentForPreDownload adds a torrent for background pre-download.
+// Unlike normal AddTorrent, this sets low priority and disables seeding
+// when DisablePreloadSeeding is enabled.
+func AddTorrentForPreDownload(spec *torrent.TorrentSpec, title, poster string, data string, category string) (*Torrent, error) {
+	torr, err := AddTorrent(spec, title, poster, data, category)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set low priority
+	torr.IsPriority = false
+
+	// Disable seeding if configured
+	if sets.BTsets.DisablePreloadSeeding {
+		torr.SetUploadLimit(0)
+		torr.SetSeedMode(false)
+	}
+
+	return torr, nil
+}
+
 // ForceSaveTorrentToDB bypasses debounce — use only when the torrent is about
 // to be removed (expiry) so the final peer snapshot is always persisted.
 func ForceSaveTorrentToDB(torr *Torrent) {

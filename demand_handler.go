@@ -11,11 +11,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent/metainfo"
+
 	"gostream/internal/catalog/tmdb"
 	"gostream/internal/config"
 	"gostream/internal/prowlarr"
 	"gostream/internal/syncer/engines"
 	"gostream/internal/syncer/quality"
+	"gostream/internal/gostorm/torr"
 )
 
 // DemandJob tracks the state of an on-demand sync request.
@@ -444,21 +448,29 @@ func runMovieDownload(job *DemandJob) {
 	bestStream := streams[0]
 	magnet := engines.BuildMagnet(bestStream.InfoHash, bestStream.Title, engines.DefaultTrackers())
 
-	gostormClient := engines.NewGoStormClient(globalConfig.GoStormBaseURL)
-	hash, err := gostormClient.AddTorrent(ctx, magnet, bestStream.Title)
+	// Parse magnet to get TorrentSpec
+	mag, err := metainfo.ParseMagnetUri(magnet)
+	if err != nil {
+		job.Status = "failed"
+		job.Error = fmt.Sprintf("parse magnet failed: %v", err)
+		return
+	}
+
+	spec := &torrent.TorrentSpec{
+		InfoBytes:   nil,
+		Trackers:    [][]string{mag.Trackers},
+		DisplayName: mag.DisplayName,
+		InfoHash:    mag.InfoHash,
+	}
+
+	// Use in-process AddTorrentForPreDownload which handles priority + seeding
+	t, err := torr.AddTorrentForPreDownload(spec, bestStream.Title, "", "", "movie")
 	if err != nil {
 		job.Status = "failed"
 		job.Error = fmt.Sprintf("add torrent failed: %v", err)
 		return
 	}
-
-	// 4. Disable seeding by setting upload limit to 0 via GoStorm API
-	if err := gostormClient.SetSeedMode(ctx, hash, false); err != nil {
-		logger.Printf("[MovieDownload] warning: could not disable seed mode for %s: %v", hash, err)
-	}
-	if err := gostormClient.SetUploadLimit(ctx, hash, 0); err != nil {
-		logger.Printf("[MovieDownload] warning: could not set upload limit for %s: %v", hash, err)
-	}
+	hash := t.Hash().HexString()
 
 	// 5. Mark completed
 	job.Status = "completed"

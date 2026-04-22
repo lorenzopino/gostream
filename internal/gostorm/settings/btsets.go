@@ -58,6 +58,9 @@ type BTSets struct {
 
 	// Storage preferences
 	StoreSettingsInJson bool
+
+	// Pre-download
+	DisablePreloadSeeding bool // If true, pre-download torrents don't seed
 }
 
 func (v *BTSets) String() string {
@@ -159,6 +162,7 @@ func SetDefaultConfig() {
 	sets.ShowFSActiveTorr = true
 	sets.StoreSettingsInJson = true
 	sets.DiskCacheQuotaGB = 50
+	sets.DisablePreloadSeeding = true
 	BTsets = sets
 	if !ReadOnly {
 		buf, err := json.Marshal(BTsets)
