@@ -242,3 +242,43 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// SetSeedMode enables or disables seeding for a torrent.
+func (c *GoStormClient) SetSeedMode(ctx context.Context, hash string, seed bool) error {
+	body := map[string]interface{}{
+		"hash":      hash,
+		"seed_mode": seed,
+	}
+	return c.postTorrentAction(ctx, body)
+}
+
+// SetUploadLimit sets the upload speed limit for a torrent (0 = unlimited, but we use it to disable seeding).
+func (c *GoStormClient) SetUploadLimit(ctx context.Context, hash string, limitBytesPerSec int64) error {
+	body := map[string]interface{}{
+		"hash":          hash,
+		"upload_limit":  limitBytesPerSec,
+	}
+	return c.postTorrentAction(ctx, body)
+}
+
+func (c *GoStormClient) postTorrentAction(ctx context.Context, body map[string]interface{}) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/torrents/action", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gostorm action error %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 120)]))
+	}
+	return nil
+}

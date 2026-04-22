@@ -3457,6 +3457,11 @@ func main() {
 		http.HandleFunc("/api/tv-sync/demand", handleDemandPOST)
 		http.HandleFunc("/api/tv-sync/demand/", handleDemandGET)
 
+		// Movie cache endpoints
+		movieTracker = NewDemandTracker()
+		http.HandleFunc("/api/movie-cache/download", handleMovieDownloadPOST)
+		http.HandleFunc("/api/movie-cache/status/", handleMovieDownloadGET)
+
 		// V430: Offline Health Checker — monitors torrent health and replaces dead/slow ones.
 		// Runs every 24h, only offline (never during playback).
 		if stateDB != nil {

@@ -13,6 +13,7 @@ import (
 
 	"gostream/internal/catalog/tmdb"
 	"gostream/internal/config"
+	"gostream/internal/prowlarr"
 	"gostream/internal/syncer/engines"
 	"gostream/internal/syncer/quality"
 )
@@ -307,4 +308,186 @@ func triggerJellyfinRefresh(job *DemandJob) {
 	} else {
 		logger.Printf("[Demand] Jellyfin refresh returned status %d for item %s", resp.StatusCode, job.JellyfinItemID)
 	}
+}
+
+// --- Movie Download Handlers ---
+
+var movieTracker *DemandTracker
+
+// handleMovieDownloadPOST handles POST /api/movie-cache/download
+func handleMovieDownloadPOST(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		TMDBID         int    `json:"tmdb_id"`
+		JellyfinItemID string `json:"jellyfin_item_id,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if req.TMDBID <= 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "tmdb_id is required"})
+		return
+	}
+
+	jobID := fmt.Sprintf("movie-%d", req.TMDBID)
+
+	// Check if already downloading
+	if existing := movieTracker.Get(jobID); existing != nil {
+		if existing.Status == "downloading" || existing.Status == "started" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(existing)
+			return
+		}
+	}
+
+	job := &DemandJob{
+		JobID:          jobID,
+		TMDBID:         req.TMDBID,
+		JellyfinItemID: req.JellyfinItemID,
+		Status:         "started",
+		StartedAt:      time.Now(),
+	}
+	movieTracker.Add(job)
+
+	go runMovieDownload(job)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"job_id": jobID,
+		"status": "started",
+	})
+}
+
+// handleMovieDownloadGET handles GET /api/movie-cache/status/{job_id}
+func handleMovieDownloadGET(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/movie-cache/status/")
+	if path == "" {
+		http.Error(w, "job_id required", http.StatusBadRequest)
+		return
+	}
+
+	job := movieTracker.Get(path)
+	if job == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "job not found"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(job)
+}
+
+// runMovieDownload performs the full movie download in background.
+func runMovieDownload(job *DemandJob) {
+	job.Status = "downloading"
+	logger.Printf("[MovieDownload] started: TMDB %d (job=%s)", job.TMDBID, job.JobID)
+
+	defer func() {
+		if r := recover(); r != nil {
+			job.Status = "failed"
+			job.Error = fmt.Sprintf("panic: %v", r)
+		}
+		job.CompletedAt = time.Now()
+		logger.Printf("[MovieDownload] job %s completed: status=%s",
+			job.JobID, job.Status)
+	}()
+
+	// 1. Resolve TMDB details
+	ctx := context.Background()
+	tmdbClient := tmdb.NewClient(globalConfig.TMDBAPIKey)
+	details, err := tmdbClient.MovieDetails(ctx, job.TMDBID)
+	if err != nil {
+		job.Status = "failed"
+		job.Error = fmt.Sprintf("TMDB lookup failed: %v", err)
+		return
+	}
+
+	imdbID, err := tmdbClient.ExternalIDs(ctx, job.TMDBID)
+	if err != nil || imdbID == "" {
+		job.Status = "failed"
+		job.Error = "no IMDB ID found"
+		return
+	}
+
+	// 2. Find best torrent via Prowlarr
+	pc := prowlarr.NewClient(globalConfig.Prowlarr)
+	if pc == nil {
+		job.Status = "failed"
+		job.Error = "Prowlarr is not enabled"
+		return
+	}
+	streams := pc.FetchTorrents(imdbID, "movie", details.Title, prowlarr.DefaultMovieCategories())
+	if len(streams) == 0 {
+		job.Status = "failed"
+		job.Error = "no torrents found via Prowlarr"
+		return
+	}
+
+	// 3. Add torrent for pre-download (download only, no seeding)
+	bestStream := streams[0]
+	magnet := engines.BuildMagnet(bestStream.InfoHash, bestStream.Title, engines.DefaultTrackers())
+
+	gostormClient := engines.NewGoStormClient(globalConfig.GoStormBaseURL)
+	hash, err := gostormClient.AddTorrent(ctx, magnet, bestStream.Title)
+	if err != nil {
+		job.Status = "failed"
+		job.Error = fmt.Sprintf("add torrent failed: %v", err)
+		return
+	}
+
+	// 4. Disable seeding by setting upload limit to 0 via GoStorm API
+	if err := gostormClient.SetSeedMode(ctx, hash, false); err != nil {
+		logger.Printf("[MovieDownload] warning: could not disable seed mode for %s: %v", hash, err)
+	}
+	if err := gostormClient.SetUploadLimit(ctx, hash, 0); err != nil {
+		logger.Printf("[MovieDownload] warning: could not set upload limit for %s: %v", hash, err)
+	}
+
+	// 5. Mark completed
+	job.Status = "completed"
+	logger.Printf("[MovieDownload] completed: TMDB %d, hash=%s", job.TMDBID, hash)
+
+	// 6. Trigger Jellyfin refresh
+	if job.JellyfinItemID != "" {
+		triggerJellyfinRefreshForMovie(job)
+	}
+}
+
+// triggerJellyfinRefreshForMovie asks Jellyfin to re-scan a specific movie item.
+func triggerJellyfinRefreshForMovie(job *DemandJob) {
+	if globalConfig.Jellyfin.URL == "" || globalConfig.Jellyfin.APIKey == "" {
+		logger.Printf("[MovieDownload] Jellyfin refresh skipped: no config")
+		return
+	}
+
+	url := fmt.Sprintf("%s/Items/%s/Refresh?Recursive=true",
+		globalConfig.Jellyfin.URL, job.JellyfinItemID)
+	req, _ := http.NewRequest("POST", url, nil)
+	req.Header.Set("X-Emby-Token", globalConfig.Jellyfin.APIKey)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Printf("[MovieDownload] Jellyfin refresh failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	logger.Printf("[MovieDownload] Jellyfin refresh succeeded for item %s", job.JellyfinItemID)
 }
