@@ -56,6 +56,10 @@ type Torrent struct {
 	closed <-chan struct{}
 
 	cachedFileStats []*state.TorrentFileStat
+
+	// Pre-download control
+	uploadLimit int64 // bytes/sec, 0 = unlimited
+	seedMode    bool  // if false, don't announce as seed
 }
 
 func NewTorrent(spec *torrent.TorrentSpec, bt *BTServer) (*Torrent, error) {
@@ -241,6 +245,19 @@ func (t *Torrent) SetAggressiveMode(enabled bool, masterLimit int) {
 	if t.cache != nil {
 		t.cache.SetAggressive(enabled, masterLimit)
 	}
+}
+
+// SetUploadLimit sets the maximum upload bandwidth for this torrent (bytes/sec).
+// 0 means unlimited. Set to 0 for pre-download torrents to disable seeding.
+func (t *Torrent) SetUploadLimit(limit int64) {
+	t.uploadLimit = limit
+}
+
+// SetSeedMode controls whether this torrent announces itself as a seed to peers.
+// When false (pre-download mode), the torrent downloads pieces but doesn't
+// contribute upload bandwidth to the swarm.
+func (t *Torrent) SetSeedMode(enabled bool) {
+	t.seedMode = enabled
 }
 
 func (t *Torrent) Files() []*torrent.File {
