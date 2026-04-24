@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -108,16 +109,9 @@ func isRetryable(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return containsAny(msg, "timeout", "connection refused", "no such host", "EOF", "context deadline")
-}
-
-func containsAny(s string, substrs ...string) bool {
-	for _, sub := range substrs {
-		for i := 0; i <= len(s)-len(sub); i++ {
-			if s[i:i+len(sub)] == sub {
-				return true
-			}
-		}
-	}
-	return false
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "context deadline")
 }
