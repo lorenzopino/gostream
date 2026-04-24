@@ -695,19 +695,26 @@ func extractHashFromURL(url string) string {
 
 // getOrCreateTorrentByHash finds an existing torrent by hash or adds it if not present.
 func getOrCreateTorrentByHash(hash string) *torr.Torrent {
-	// Try existing torrent first
+	// Try active torrent first (already loaded in engine)
 	t := torr.GetTorrent(hash)
-	if t != nil {
-		logger.Printf("[MovieDownload] found existing torrent in engine: %s", hash[:16])
-		// Wait for info to be ready (may already be ready if torrent is active)
-		if t.GotInfo() {
-			return t
-		}
-		logger.Printf("[MovieDownload] GotInfo timeout for existing torrent %s", hash[:16])
-		return nil
+	if t != nil && t.GotInfo() {
+		logger.Printf("[MovieDownload] found active torrent in engine: %s", hash[:16])
+		return t
 	}
 
-	// Not in engine — find the magnet from the MKV stub and add it
+	// Torrent is in DB but not loaded — use LoadTorrent to load it from DB
+	logger.Printf("[MovieDownload] loading torrent from DB: %s", hash[:16])
+	dbTorrent := torr.GetTorrentDB(metainfo.NewHashFromHex(hash))
+	if dbTorrent != nil && dbTorrent.TorrentSpec != nil {
+		loaded := torr.LoadTorrent(dbTorrent)
+		if loaded != nil && loaded.GotInfo() {
+			logger.Printf("[MovieDownload] loaded torrent from DB: %s", hash[:16])
+			return loaded
+		}
+	}
+
+	// Not in DB either — find the magnet from the MKV stub and add it
+	logger.Printf("[MovieDownload] searching MKV stubs for hash: %s", hash[:16])
 	moviesDir := globalConfig.PhysicalSourcePath
 	if moviesDir != "" {
 		moviesDir = filepath.Join(moviesDir, "movies")
