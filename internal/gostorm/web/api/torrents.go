@@ -81,14 +81,6 @@ func torrents(c *gin.Context) {
 		{
 			wipeTorrents(c)
 		}
-	case "seed_mode":
-		{
-			setTorrentSeedMode(req, c)
-		}
-	case "upload_limit":
-		{
-			setTorrentUploadLimit(req, c)
-		}
 	}
 }
 
@@ -210,52 +202,16 @@ func listTorrents(c *gin.Context) {
 }
 
 func listActiveTorrents(c *gin.Context) {
-	list := torr.ListTorrent()
+	list := torr.ListActiveTorrent()
+	if len(list) == 0 {
+		c.JSON(200, []*state.TorrentStatus{})
+		return
+	}
 	var stats []*state.TorrentStatus
 	for _, tr := range list {
-		st := tr.Status()
-		if st.TotalPeers > 0 || st.BytesReadData > 0 {
-			stats = append(stats, st)
-		}
+		stats = append(stats, tr.Status())
 	}
 	c.JSON(200, stats)
-}
-
-// setTorrentSeedMode enables or disables seeding for a torrent.
-// V466: Used by watchlist sync to disable seeding for pre-downloaded favorites.
-func setTorrentSeedMode(req torrReqJS, c *gin.Context) {
-	if req.Hash == "" {
-		c.AbortWithError(http.StatusBadRequest, errors.New("hash is empty"))
-		return
-	}
-	tor := torr.GetTorrent(req.Hash)
-	if tor == nil {
-		c.Status(http.StatusNotFound)
-		return
-	}
-	// seed_mode value was already parsed by the main switch - default to true
-	// The actual value doesn't matter for now, we just enable/disable
-	tor.SetSeedMode(true)
-	log.TLogln("[API] SetSeedMode for", req.Hash, "= true")
-	c.Status(http.StatusOK)
-}
-
-// setTorrentUploadLimit sets the upload bandwidth limit for a torrent.
-// V466: Used by watchlist sync to disable upload bandwidth for pre-downloaded favorites.
-func setTorrentUploadLimit(req torrReqJS, c *gin.Context) {
-	if req.Hash == "" {
-		c.AbortWithError(http.StatusBadRequest, errors.New("hash is empty"))
-		return
-	}
-	tor := torr.GetTorrent(req.Hash)
-	if tor == nil {
-		c.Status(http.StatusNotFound)
-		return
-	}
-	// Set upload limit to 0 (no upload bandwidth)
-	tor.SetUploadLimit(0)
-	log.TLogln("[API] SetUploadLimit for", req.Hash, "= 0")
-	c.Status(http.StatusOK)
 }
 
 func dropTorrent(req torrReqJS, c *gin.Context) {
