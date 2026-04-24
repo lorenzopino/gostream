@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,7 +29,10 @@ type DemandJob struct {
 	TMDBID          int       `json:"tmdb_id"`
 	ShowName        string    `json:"show_name,omitempty"`
 	JellyfinItemID  string    `json:"jellyfin_item_id,omitempty"`
-	Status          string    `json:"status"` // "started", "running", "completed", "failed"
+	Status          string    `json:"status"` // "started", "downloading", "completed", "failed"
+	Progress        float64   `json:"progress,omitempty"`
+	DownloadedBytes int64     `json:"downloaded_bytes,omitempty"`
+	TotalBytes      int64     `json:"total_bytes,omitempty"`
 	EpisodesCreated int       `json:"episodes_created,omitempty"`
 	EpisodesSkipped int       `json:"episodes_skipped,omitempty"`
 	Error           string    `json:"error,omitempty"`
@@ -472,13 +476,59 @@ func runMovieDownload(job *DemandJob) {
 	}
 	hash := t.Hash().HexString()
 
-	// 5. Mark completed
-	job.Status = "completed"
-	logger.Printf("[MovieDownload] completed: TMDB %d, hash=%s", job.TMDBID, hash)
+	// 5. Wait for download to complete (poll torrent stats)
+	logger.Printf("[MovieDownload] waiting for download: TMDB %d, hash=%s", job.TMDBID, hash)
+	downloadCtx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+	defer cancel()
 
-	// 6. Trigger Jellyfin refresh
-	if job.JellyfinItemID != "" {
-		triggerJellyfinRefreshForMovie(job)
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	totalLength := t.Length()
+	totalPieces := 0
+	if info := t.Info(); info != nil {
+		totalPieces = info.NumPieces()
+	}
+
+	for {
+		select {
+		case <-downloadCtx.Done():
+			job.Status = "failed"
+			job.Error = "download timed out after 2 hours"
+			logger.Printf("[MovieDownload] timeout: TMDB %d", job.TMDBID)
+			return
+		case <-ticker.C:
+			stats := t.Stats()
+			var progress float64
+			if totalPieces > 0 {
+				progress = float64(stats.PiecesComplete) / float64(totalPieces)
+			}
+			job.Progress = math.Min(progress, 1.0)
+
+			downloadedBytes := int64(float64(totalLength) * progress)
+			job.DownloadedBytes = downloadedBytes
+			job.TotalBytes = totalLength
+
+			if totalPieces > 0 && stats.PiecesComplete >= totalPieces {
+				// Download complete
+				job.Status = "completed"
+				job.Progress = 1.0
+				logger.Printf("[MovieDownload] completed: TMDB %d, hash=%s, size=%.1fGB",
+					job.TMDBID, hash, float64(totalLength)/1024/1024/1024)
+
+				// 6. Trigger Jellyfin refresh
+				if job.JellyfinItemID != "" {
+					triggerJellyfinRefreshForMovie(job)
+				}
+				return
+			}
+
+			logger.Printf("[MovieDownload] progress: %.1f%% (%d/%d pieces, %.1f/%.1f GB)",
+				progress*100,
+				stats.PiecesComplete, totalPieces,
+				float64(downloadedBytes)/1024/1024/1024,
+				float64(totalLength)/1024/1024/1024)
+		}
 	}
 }
 
