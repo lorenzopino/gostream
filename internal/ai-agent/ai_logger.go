@@ -9,7 +9,6 @@ import (
 )
 
 // AILogger writes structured JSON entries to the AI agent log file.
-// Separate from the main GoStream log to avoid polluting human-readable logs.
 type AILogger struct {
 	logger *log.Logger
 	file   *os.File
@@ -18,9 +17,9 @@ type AILogger struct {
 // AILogEntry is the structured format for AI agent log entries.
 type AILogEntry struct {
 	Timestamp time.Time      `json:"ts"`
-	Level     string         `json:"level"`      // "info", "warn", "error"
-	Detector  string         `json:"detector"`   // which detector emitted
-	Issue     string         `json:"issue"`      // issue type
+	Level     string         `json:"level"`
+	Detector  string         `json:"detector"`
+	Issue     string         `json:"issue,omitempty"`
 	TorrentID string         `json:"torrent_id,omitempty"`
 	File      string         `json:"file,omitempty"`
 	IMDBID    string         `json:"imdb_id,omitempty"`
@@ -133,13 +132,11 @@ func (l *AILogger) write(level, detector, msg string, fields []AILogField) {
 	// Write human-readable line
 	l.logger.Printf("[%s] %s: %s", level, detector, msg)
 
-	// Append JSON entry to the file directly
-	file, err := os.OpenFile(l.file.Name(), os.O_WRONLY|os.O_APPEND, 0644)
+	// Write JSON entry to file
+	data, err := json.Marshal(entry)
 	if err == nil {
-		data, _ := json.Marshal(entry)
-		file.Write(data)
-		file.Write([]byte("\n"))
-		file.Close()
+		_, _ = l.file.Write(data)
+		_, _ = l.file.Write([]byte("\n"))
 	}
 }
 
