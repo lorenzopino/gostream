@@ -1344,7 +1344,13 @@ func (h *MkvHandle) nativePumpChunk(r *NativeReader, offset, chunkSize, playerOf
 	case result := <-resultCh:
 		n = result.n
 		if result.err != nil {
-			// ReadAt returned error — pump will exit via the err != nil check below
+			errStr := result.err.Error()
+			// V470: "interrupted by seek" is a controlled shutdown — the reader
+			// will auto-reconnect on the next ReadAt via the Hard Seek path.
+			// Continue the pump loop so the reader can retry with a fresh stream.
+			if strings.Contains(errStr, "interrupted by seek") {
+				return false, offset
+			}
 			if result.err == context.Canceled || result.err == io.EOF {
 				return true, offset + int64(result.n)
 			}
