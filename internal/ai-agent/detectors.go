@@ -35,24 +35,21 @@ func DefaultDetectorConfig() DetectorConfig {
 		TimeoutStartupMs:   30000,
 		LowSeederThreshold: 3,
 		NoDownloadTimeout:  60 * time.Second,
-		ReadStallTimeout:   5 * time.Second,
 	}
 }
 
 // Detectors manages all issue detection goroutines.
 type Detectors struct {
-	cfg     DetectorConfig
-	buffer  *Buffer
-	logger  *log.Logger
-	aiLog   *AILogger
-	stopCh  chan struct{}
-	once    sync.Once
+	cfg    DetectorConfig
+	buffer *Buffer
+	logger *log.Logger
+	aiLog  *AILogger
+	stopCh chan struct{}
+	once   sync.Once
 
 	// Internal state for tracking
-	torrentStates    map[string]torrentState
-	torrentStatesMu  sync.RWMutex
-	recentWebhooks   map[string]time.Time // IMDB ID → timestamp
-	recentWebhooksMu sync.RWMutex
+	torrentStates   map[string]torrentState
+	torrentStatesMu sync.RWMutex
 }
 
 type torrentState struct {
@@ -62,21 +59,15 @@ type torrentState struct {
 	lastChecked  time.Time
 }
 
-type logError struct {
-	ts  time.Time
-	msg string
-}
-
-// Detectors creates and starts all detector goroutines.
+// NewDetectors creates and initializes all detector goroutines.
 func NewDetectors(cfg DetectorConfig, buffer *Buffer, logger *log.Logger, aiLog *AILogger) *Detectors {
 	return &Detectors{
-		cfg:            cfg,
-		buffer:         buffer,
-		logger:         logger,
-		aiLog:          aiLog,
-		stopCh:         make(chan struct{}),
-		torrentStates:  make(map[string]torrentState),
-		recentWebhooks: make(map[string]time.Time),
+		cfg:           cfg,
+		buffer:        buffer,
+		logger:        logger,
+		aiLog:         aiLog,
+		stopCh:        make(chan struct{}),
+		torrentStates: make(map[string]torrentState),
 	}
 }
 
@@ -84,7 +75,6 @@ func NewDetectors(cfg DetectorConfig, buffer *Buffer, logger *log.Logger, aiLog 
 func (d *Detectors) Start() {
 	go d.torrentHealthLoop()
 	go d.logMonitorLoop()
-	go d.webhookMatcherLoop()
 	d.logger.Printf("[AIAgent] detectors started")
 }
 
@@ -94,13 +84,6 @@ func (d *Detectors) Stop() {
 		close(d.stopCh)
 		d.logger.Printf("[AIAgent] detectors stopped")
 	})
-}
-
-// RecordWebhookMatch records a successful webhook match for later correlation.
-func (d *Detectors) RecordWebhookMatch(imdbID string) {
-	d.recentWebhooksMu.Lock()
-	defer d.recentWebhooksMu.Unlock()
-	d.recentWebhooks[imdbID] = time.Now()
 }
 
 // --- Torrent Health Detector ---
@@ -132,7 +115,7 @@ func (d *Detectors) checkTorrentHealth() {
 		current := torrentState{
 			seeders:      t.Stats.Seeders,
 			peers:        t.Stats.Peers,
-			downloadKBps: float64(t.Stats.DownloadSpeed) / 1024.0,
+			downloadKBps: t.Stats.DownloadSpeed / 1024.0,
 			lastChecked:  time.Now(),
 		}
 		d.torrentStates[t.ID] = current
@@ -142,8 +125,8 @@ func (d *Detectors) checkTorrentHealth() {
 		if t.Stats.Seeders == 0 && existed {
 			age := time.Since(prev.lastChecked).Seconds()
 			if age > 60 {
-				d.aiLog.Warn("torrent_health", "dead torrent detected",
-					F("issue", "dead_torrent"),
+				d.aiLog.Warn("torrent_health", "dead torrent",
+					F("issue", TypeDeadTorrent),
 					F("torrent_id", t.ID),
 					F("file", t.Title),
 					F("seeders", 0),
@@ -167,8 +150,8 @@ func (d *Detectors) checkTorrentHealth() {
 
 		// Check for low seeders
 		if t.Stats.Seeders > 0 && t.Stats.Seeders < d.cfg.LowSeederThreshold {
-			d.aiLog.Warn("torrent_health", "low seeder count",
-				F("issue", "low_seeders"),
+			d.aiLog.Warn("torrent_health", "low seeders",
+				F("issue", TypeLowSeeders),
 				F("torrent_id", t.ID),
 				F("file", t.Title),
 				F("seeders", t.Stats.Seeders),
@@ -186,12 +169,12 @@ func (d *Detectors) checkTorrentHealth() {
 			})
 		}
 
-		// Check for no download despite active peers
-		if t.Stats.DownloadSpeed == 0 && t.Stats.Peers > 0 && existed {
+		// Check for no download (active but 0 KBps)
+		if t.Stats.DownloadSpeed == 0 && t.Stats.Seeders > 0 && existed {
 			sinceLast := time.Since(prev.lastChecked)
 			if sinceLast > d.cfg.NoDownloadTimeout {
 				d.aiLog.Warn("torrent_health", "no download despite active peers",
-					F("issue", "no_download"),
+					F("issue", TypeNoDownload),
 					F("torrent_id", t.ID),
 					F("file", t.Title),
 				)
@@ -217,7 +200,6 @@ func (d *Detectors) logMonitorLoop() {
 	ticker := time.NewTicker(d.cfg.CheckInterval)
 	defer ticker.Stop()
 
-	// Track error patterns in a sliding window
 	var windowMu sync.Mutex
 	window := make([]logError, 0)
 	knownPatterns := make(map[string]int)
@@ -230,10 +212,9 @@ func (d *Detectors) logMonitorLoop() {
 			windowMu.Lock()
 			now := time.Now()
 			for _, e := range errors {
-				window = append(window, logError{ts: now, msg: e.msg})
+				window = append(window, logError{ts: now, msg: e})
 			}
 
-			// Prune old entries
 			cutoff := now.Add(-d.cfg.LogTailWindow)
 			filtered := make([]logError, 0, len(window))
 			for _, e := range window {
@@ -242,18 +223,16 @@ func (d *Detectors) logMonitorLoop() {
 				}
 			}
 
-			// Count by pattern
 			counts := make(map[string]int)
 			for _, e := range filtered {
 				pattern := normalizeErrorPattern(e.msg)
 				counts[pattern]++
 			}
 
-			// Check for spikes
 			for pattern, count := range counts {
 				if count >= d.cfg.MaxErrorsPerSpike && count > knownPatterns[pattern] {
 					d.aiLog.Warn("log_monitor", "error spike detected",
-						F("issue", "error_spike"),
+						F("issue", TypeErrorSpike),
 						F("count", count),
 						F("pattern", pattern),
 						F("action_needed", "investigate"),
@@ -270,8 +249,9 @@ func (d *Detectors) logMonitorLoop() {
 						},
 					})
 				}
+				knownPatterns[pattern] = count
 			}
-			knownPatterns = counts
+
 			window = filtered
 			windowMu.Unlock()
 
@@ -281,7 +261,12 @@ func (d *Detectors) logMonitorLoop() {
 	}
 }
 
-func (d *Detectors) scanRecentLogErrors() []logError {
+type logError struct {
+	ts  time.Time
+	msg string
+}
+
+func (d *Detectors) scanRecentLogErrors() []string {
 	const logPath = "logs/gostream.log"
 	data, err := os.ReadFile(logPath)
 	if err != nil {
@@ -293,11 +278,11 @@ func (d *Detectors) scanRecentLogErrors() []logError {
 		lines = lines[len(lines)-200:]
 	}
 
-	var errors []logError
+	var errors []string
 	errorRe := regexp.MustCompile(`(?i)(error|fail|timeout|panic|dead|stall)`)
 	for _, line := range lines {
 		if errorRe.MatchString(line) {
-			errors = append(errors, logError{msg: line})
+			errors = append(errors, line)
 		}
 	}
 	return errors
@@ -307,51 +292,6 @@ func normalizeErrorPattern(msg string) string {
 	normalized := regexp.MustCompile(`[0-9a-f]{8,}`).ReplaceAllString(msg, "<HASH>")
 	normalized = regexp.MustCompile(`\d+`).ReplaceAllString(normalized, "<N>")
 	return normalized
-}
-
-// --- Webhook Matcher Detector ---
-
-func (d *Detectors) webhookMatcherLoop() {
-	ticker := time.NewTicker(d.cfg.CheckInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			d.checkUnconfirmedPlay()
-		case <-d.stopCh:
-			return
-		}
-	}
-}
-
-func (d *Detectors) checkUnconfirmedPlay() {
-	lines := d.scanRecentLogErrors()
-	for _, e := range lines {
-		if strings.Contains(strings.ToLower(e.msg), "unconfirmed") ||
-			strings.Contains(strings.ToLower(e.msg), "no match") {
-			imdbRe := regexp.MustCompile(`tt\d+`)
-			imdbID := ""
-			if m := imdbRe.FindString(e.msg); m != "" {
-				imdbID = m
-			}
-
-			d.aiLog.Warn("webhook_matcher", "unconfirmed play detected",
-				F("issue", "unconfirmed_play"),
-				F("imdb_id", imdbID),
-				F("log_snippet", e.msg),
-				F("action_needed", "verify"),
-			)
-			d.buffer.Add(Issue{
-				Type:        TypeUnconfirmedPlay,
-				Priority:    PriorityA,
-				IMDBID:      imdbID,
-				FirstSeen:   time.Now(),
-				Occurrences: 1,
-				LogSnippet:  e.msg,
-			})
-		}
-	}
 }
 
 // --- GoStorm API Types ---
@@ -392,4 +332,31 @@ func (d *Detectors) fetchActiveTorrents() ([]goStormTorrent, error) {
 	})
 
 	return result.Result, nil
+}
+
+// --- Placeholder detectors (to be implemented in Phase 2) ---
+
+// webhookMatcherLoop will detect unconfirmed plays and wrong matches.
+func (d *Detectors) webhookMatcherLoop() {
+	// TODO: Implement in Phase 2 — requires integration with webhook handler
+}
+
+// fuseAccessLoop will detect FUSE mount stalls and read errors.
+func (d *Detectors) fuseAccessLoop() {
+	// TODO: Implement in Phase 2 — requires FUSE instrumentation
+}
+
+// subtitleCheckerLoop will check subtitle availability after playback.
+func (d *Detectors) subtitleCheckerLoop() {
+	// TODO: Implement in Phase 2 — requires Jellyfin API integration
+}
+
+// seriesCompletenessLoop will check favorited series against TMDB.
+func (d *Detectors) seriesCompletenessLoop() {
+	// TODO: Implement in Phase 2 — requires TMDB + Jellyfin integration
+}
+
+// favoritesCheckLoop will verify movie pre-download completion.
+func (d *Detectors) favoritesCheckLoop() {
+	// TODO: Implement in Phase 2 — requires Jellyfin favorites API
 }
