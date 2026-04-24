@@ -95,7 +95,13 @@ func (w *Webhook) doPost(data []byte) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= 500 {
+		// Server errors are retryable
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
 	if resp.StatusCode >= 400 {
+		// Client errors are NOT retryable
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
@@ -109,9 +115,17 @@ func isRetryable(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "timeout") ||
+	// Network errors
+	if strings.Contains(msg, "timeout") ||
 		strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "no such host") ||
 		strings.Contains(msg, "EOF") ||
-		strings.Contains(msg, "context deadline")
+		strings.Contains(msg, "context deadline") {
+		return true
+	}
+	// HTTP 5xx server errors
+	if strings.Contains(msg, "HTTP 5") {
+		return true
+	}
+	return false
 }
