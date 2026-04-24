@@ -124,6 +124,11 @@ func (e *WatchlistGoEngine) Run(ctx context.Context) error {
 		}
 
 		if e.isAlreadyPresent(item, imdbSet, titleIndex) {
+			// V466: Film già presente nella libreria → triggera download automatico
+			// con upload=0 per cache su disco (favorite pre-download).
+			e.logger.Printf("[Watchlist] movie already present: %s (IMDB: %s) — triggering auto-download",
+				item.Title, item.IMDBID)
+			e.triggerMoviePreDownload(ctx, item.IMDBID, item.Title)
 			continue
 		}
 
@@ -553,4 +558,45 @@ func parseInt(s string) int {
 	var i int
 	fmt.Sscanf(s, "%d", &i)
 	return i
+}
+
+// triggerMoviePreDownload adds a torrent for background download with upload=0.
+// V466: When a movie is already present in the library (MKV exists) but the user
+// adds it to favorites, trigger automatic download so the next play is instant.
+// The torrent downloads with zero upload bandwidth (no seeding) and is stored
+// on disk via DiskPiece persistent cache.
+func (e *WatchlistGoEngine) triggerMoviePreDownload(ctx context.Context, imdbID, title string) {
+	streams, err := e.getStreams(ctx, imdbID, title)
+	if err != nil || len(streams) == 0 {
+		e.logger.Printf("[Watchlist] pre-download failed: no torrents found for %s (IMDB: %s)", title, imdbID)
+		return
+	}
+
+	// Pick best stream (same quality policy as new movies)
+	candidates := e.pickBestStream(streams)
+	if len(candidates) == 0 {
+		e.logger.Printf("[Watchlist] pre-download skipped: no suitable torrents for %s (IMDB: %s)", title, imdbID)
+		return
+	}
+
+	best := candidates[0]
+	magnet := BuildMagnet(best.InfoHash, title, DefaultTrackers())
+
+	// Add torrent with pre-download mode (upload=0, no seeding)
+	hash, err := e.gostorm.AddTorrent(ctx, magnet, title)
+	if err != nil || hash == "" {
+		e.logger.Printf("[Watchlist] pre-download failed: AddTorrent error for %s: %v", title, err)
+		return
+	}
+
+	// Set upload limit to 0 and disable seeding
+	if err := e.gostorm.SetUploadLimit(ctx, hash, 0); err != nil {
+		e.logger.Printf("[Watchlist] SetUploadLimit failed for %s: %v", title, err)
+	}
+	if err := e.gostorm.SetSeedMode(ctx, hash, false); err != nil {
+		e.logger.Printf("[Watchlist] SetSeedMode failed for %s: %v", title, err)
+	}
+
+	e.logger.Printf("[Watchlist] pre-download started: %s (hash=%s, size=%s)",
+		title, hash[:min(8, len(hash))], best.Title)
 }
