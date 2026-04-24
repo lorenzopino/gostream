@@ -1,7 +1,6 @@
 package aiagent
 
 import (
-	"fmt"
 	"testing"
 	"time"
 )
@@ -65,35 +64,28 @@ func TestBuffer_FlushOnSize(t *testing.T) {
 		FlushTimeout: 10 * time.Second,
 		MaxSize:      3,
 	})
-	defer buf.Stop()
 
-	var flushedBatches []IssueBatch
+	flushed := make(chan IssueBatch, 1)
 	buf.OnFlush(func(batch IssueBatch) {
-		flushedBatches = append(flushedBatches, batch)
+		flushed <- batch
 	})
 
 	now := time.Now()
-	// Use unique TorrentID values to avoid dedup
-	for i := 0; i < 3; i++ {
-		buf.Add(Issue{
-			Type:        "dead_torrent",
-			Priority:    "B",
-			TorrentID:   fmt.Sprintf("torrent-%d", i),
-			File:        "Movie.mkv",
-			FirstSeen:   now,
-			Occurrences: 1,
-		})
+	buf.Add(Issue{Type: "dead_torrent", Priority: "B", TorrentID: "t1", FirstSeen: now, Occurrences: 1})
+	buf.Add(Issue{Type: "slow_startup", Priority: "B", TorrentID: "t2", FirstSeen: now, Occurrences: 1})
+	buf.Add(Issue{Type: "fuse_error", Priority: "B", TorrentID: "t3", FirstSeen: now, Occurrences: 1})
+
+	select {
+	case batch := <-flushed:
+		if len(batch.Issues) != 3 {
+			t.Fatalf("expected 3 issues in flushed batch, got %d", len(batch.Issues))
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected flush on size, but no flush occurred")
 	}
 
-	// flushLocked is called synchronously when size threshold is hit,
-	// but the onFlush callback runs with the mutex released, so we give it a tiny moment
-	time.Sleep(10 * time.Millisecond)
-
-	if len(flushedBatches) == 0 {
-		t.Fatal("expected flush on size")
-	}
-	if len(flushedBatches[0].Issues) != 3 {
-		t.Fatalf("expected 3 issues in batch, got %d", len(flushedBatches[0].Issues))
+	if buf.Len() != 0 {
+		t.Fatalf("expected buffer empty after flush, got %d", buf.Len())
 	}
 }
 
@@ -104,9 +96,9 @@ func TestBuffer_FlushOnTimeout(t *testing.T) {
 	})
 	defer buf.Stop()
 
-	var flushedBatches []IssueBatch
+	flushed := make(chan IssueBatch, 1)
 	buf.OnFlush(func(batch IssueBatch) {
-		flushedBatches = append(flushedBatches, batch)
+		flushed <- batch
 	})
 
 	now := time.Now()
@@ -118,9 +110,10 @@ func TestBuffer_FlushOnTimeout(t *testing.T) {
 		Occurrences: 1,
 	})
 
-	time.Sleep(200 * time.Millisecond)
-
-	if len(flushedBatches) == 0 {
+	select {
+	case <-flushed:
+		// expected
+	case <-time.After(500 * time.Millisecond):
 		t.Fatal("expected flush on timeout")
 	}
 }
@@ -132,9 +125,9 @@ func TestBuffer_PriorityOrderInFlush(t *testing.T) {
 	})
 	defer buf.Stop()
 
-	var flushedBatches []IssueBatch
+	flushed := make(chan IssueBatch, 1)
 	buf.OnFlush(func(batch IssueBatch) {
-		flushedBatches = append(flushedBatches, batch)
+		flushed <- batch
 	})
 
 	now := time.Now()
@@ -142,13 +135,12 @@ func TestBuffer_PriorityOrderInFlush(t *testing.T) {
 	buf.Add(Issue{Type: "dead_torrent", Priority: "B", FirstSeen: now, Occurrences: 1})
 	buf.Add(Issue{Type: "wrong_match", Priority: "A", FirstSeen: now, Occurrences: 1})
 
-	time.Sleep(200 * time.Millisecond)
-
-	if len(flushedBatches) == 0 {
+	select {
+	case batch := <-flushed:
+		if batch.Issues[0].Priority != "B" {
+			t.Fatalf("expected first issue priority B, got %s", batch.Issues[0].Priority)
+		}
+	case <-time.After(500 * time.Millisecond):
 		t.Fatal("expected flush")
-	}
-	batch := flushedBatches[0]
-	if batch.Issues[0].Priority != "B" {
-		t.Fatalf("expected first issue priority B, got %s", batch.Issues[0].Priority)
 	}
 }
