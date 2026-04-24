@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -410,8 +411,9 @@ func runMovieDownload(job *DemandJob) {
 	defer func() {
 		if r := recover(); r != nil {
 			job.Status = "failed"
-			job.Error = fmt.Sprintf("panic: %v", r)
+			job.Error = fmt.Sprintf("panic: %v\n%s", r, string(debug.Stack()))
 			logger.Printf("[MovieDownload] PANIC in job %s: %v", job.JobID, r)
+			logger.Printf("[MovieDownload] Stack trace:\n%s", string(debug.Stack()))
 		} else if job.Status == "failed" {
 			logger.Printf("[MovieDownload] job %s FAILED: %s", job.JobID, job.Error)
 		}
@@ -477,6 +479,11 @@ func runMovieDownload(job *DemandJob) {
 		job.Error = fmt.Sprintf("add torrent failed: %v", err)
 		return
 	}
+	if t == nil {
+		job.Status = "failed"
+		job.Error = "add torrent returned nil torrent without error"
+		return
+	}
 	hash := t.Hash().HexString()
 
 	// 5. Wait for download to complete (poll torrent stats)
@@ -487,10 +494,23 @@ func runMovieDownload(job *DemandJob) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	totalLength := t.Length()
+	// V467: Get torrent reference by hash each iteration to avoid stale pointer.
+	// The original *Torrent may become invalid if the torrent is removed/re-added.
+	getTorrent := func() *torr.Torrent {
+		return torr.GetTorrent(hash)
+	}
+
+	// Initial info fetch
+	cur := getTorrent()
+	totalLength := int64(0)
 	totalPieces := 0
-	if info := t.Info(); info != nil {
-		totalPieces = info.NumPieces()
+	if cur != nil {
+		totalLength = cur.Length()
+		if info := cur.Info(); info != nil {
+			totalPieces = info.NumPieces()
+		}
+	} else {
+		logger.Printf("[MovieDownload] warning: torrent not found after add: %s", hash)
 	}
 
 	for {
@@ -501,14 +521,15 @@ func runMovieDownload(job *DemandJob) {
 			logger.Printf("[MovieDownload] timeout: TMDB %d", job.TMDBID)
 			return
 		case <-ticker.C:
-			// V467: Guard against nil torrent — can happen if torrent is removed while downloading
-			if t == nil {
+			// V467: Re-fetch torrent each iteration to avoid stale pointer
+			cur := getTorrent()
+			if cur == nil {
+				logger.Printf("[MovieDownload] torrent lost during download: %s", hash)
 				job.Status = "failed"
-				job.Error = "torrent reference lost during download"
-				logger.Printf("[MovieDownload] torrent reference lost: TMDB %d", job.TMDBID)
+				job.Error = fmt.Sprintf("torrent lost: hash=%s", hash[:min(8, len(hash))])
 				return
 			}
-			stats := t.Stats()
+			stats := cur.Stats()
 			var progress float64
 			if totalPieces > 0 {
 				progress = float64(stats.PiecesComplete) / float64(totalPieces)
