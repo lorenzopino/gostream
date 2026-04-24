@@ -216,9 +216,14 @@ func LoadConfig() Config {
 		StreamingThresholdKB:   128,
 		LogLevel:               "INFO",
 
-		AttrTimeoutSeconds:     1.0,
-		EntryTimeoutSeconds:    1.0,
-		NegativeTimeoutSeconds: 0.0,
+		// V463: Finder CPU fix — aggressive kernel caching to reduce FUSE call frequency.
+		// Entry timeout 10s means kernel caches name→inode lookups for 10 seconds.
+		// Negative timeout 5s means "file not found" (e.g. .DS_Store) is cached for 5s.
+		// Attr timeout 5s means file attributes are cached by kernel for 5 seconds.
+		// Before V463: Attr/Entry were 1.0s, Negative was 0.0s — caused constant Finder CPU.
+		AttrTimeoutSeconds:     5.0,
+		EntryTimeoutSeconds:    10.0,
+		NegativeTimeoutSeconds: 5.0,
 
 		HTTPClientTimeoutSeconds: 30,
 		MaxRetryAttempts:         6,

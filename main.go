@@ -67,6 +67,10 @@ var httpClient *http.Client
 // masterDataSemaphore limits concurrent data operations (Native, HTTP, Prefetch).
 var masterDataSemaphore chan struct{}
 
+// backgroundGoroutineLimiter V462: Prevents goroutine explosion during burst load (Plex scans).
+// Caps background goroutines at 100 concurrent — safeGo will block if exceeded.
+var backgroundGoroutineLimiter chan struct{}
+
 var startTime = time.Now()
 var metaCache *LRUCache
 var raCache = newReadAheadCache()
@@ -421,6 +425,23 @@ func (r *VirtualMkvRoot) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 }
 
 func (r *VirtualMkvRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	// V464: Reject macOS AppleDouble resource fork files immediately.
+	// Finder continuously requests ._*.mkv (resource forks) on network volumes.
+	// These files don't exist on our FUSE mount — returning ENOENT without Lstat
+	// prevents thousands of useless syscalls per minute.
+	if strings.HasPrefix(name, "._") {
+		return nil, syscall.ENOENT
+	}
+
+	// V463: Fast-path reject known macOS metadata files that don't exist on our FUSE mount.
+	// Finder and Spotlight probe these files constantly. With negative_timeout=5s the
+	// kernel will cache the ENOENT, but we still avoid the syscall.Lstat on first lookup.
+	switch name {
+	case ".DS_Store", ".localized", ".fseventsd", ".Spotlight-V100",
+		".Trashes", ".VolumeIcon.icns", ".background", ".TemporaryItems":
+		return nil, syscall.ENOENT
+	}
+
 	fullPath := filepath.Join(r.sourcePath, name)
 
 	if strings.HasSuffix(name, ".mkv") {
@@ -621,6 +642,18 @@ func (d *VirtualDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 }
 
 func (d *VirtualDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	// V464: Reject macOS AppleDouble resource fork files immediately.
+	if strings.HasPrefix(name, "._") {
+		return nil, syscall.ENOENT
+	}
+
+	// V463: Fast-path reject known macOS metadata files
+	switch name {
+	case ".DS_Store", ".localized", ".fseventsd", ".Spotlight-V100",
+		".Trashes", ".VolumeIcon.icns", ".background", ".TemporaryItems":
+		return nil, syscall.ENOENT
+	}
+
 	fullPath := filepath.Join(d.physicalPath, name)
 
 	if strings.HasSuffix(name, ".mkv") {
@@ -1292,16 +1325,46 @@ func (h *MkvHandle) nativePumpChunk(r *NativeReader, offset, chunkSize, playerOf
 	bufPtr := readBufferPool.Get().(*[]byte)
 	defer readBufferPool.Put(bufPtr)
 
-	n, err := r.ReadAt((*bufPtr)[:end-offset], offset)
+	// V462: Add timeout to ReadAt to prevent pump goroutine from hanging indefinitely.
+	// Without this, if the pipe stalls (no torrent peers), the pump blocks forever.
+	// This was a primary cause of D-state smbd cascades.
+	type readResult struct {
+		n   int
+		err error
+	}
+
+	resultCh := make(chan readResult, 1)
+	go func() {
+		n, err := r.ReadAt((*bufPtr)[:end-offset], offset)
+		resultCh <- readResult{n, err}
+	}()
+
+	var n int
+	select {
+	case result := <-resultCh:
+		n = result.n
+		if result.err != nil {
+			// ReadAt returned error — pump will exit via the err != nil check below
+			if result.err == context.Canceled || result.err == io.EOF {
+				return true, offset + int64(result.n)
+			}
+			// For other errors, log and stop pump
+			logger.Printf("[V462] Pump ReadAt error: %v at offset %d for %s",
+				result.err, offset, filepath.Base(h.path))
+			return true, offset + int64(result.n)
+		}
+	case <-time.After(30 * time.Second):
+		logger.Printf("[V462] Pump ReadAt timeout (30s) for %s at offset %d — interrupting",
+			filepath.Base(h.path), offset)
+		r.Interrupt()
+		return true, offset
+	}
+
 	if n > 0 {
 		raCache.Put(h.path, offset, offset+int64(n)-1, (*bufPtr)[:n])
 		if diskWarmup != nil && h.hash != "" && offset <= warmupFileSize {
 			diskWarmup.WriteChunk(h.hash, h.fileID, (*bufPtr)[:n], offset)
 		}
-	}
-
-	if err != nil {
-		return true, offset + int64(n)
 	}
 
 	return false, offset + int64(n)
@@ -1317,8 +1380,14 @@ func shouldInterruptForSeek(prevOff, off, budget int64) bool {
 }
 
 // safeGo runs a function in a new goroutine with panic recovery.
+// V462: Bounded by backgroundGoroutineLimiter to prevent goroutine explosion during burst load.
+// If the limiter is full (100 concurrent), safeGo will block until a slot is available.
 func safeGo(fn func()) {
 	go func() {
+		// Acquire slot (blocks if limiter is full)
+		backgroundGoroutineLimiter <- struct{}{}
+		defer func() { <-backgroundGoroutineLimiter }()
+
 		defer func() {
 			if r := recover(); r != nil {
 				logger.Printf("[PANIC] Background goroutine recovered: %v", r)
@@ -1649,7 +1718,7 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 				defer func() { <-masterDataSemaphore }()
 			case <-fuseCtx.Done():
 				return nil, syscall.EINTR
-			case <-time.After(30 * time.Second):
+			case <-time.After(10 * time.Second): // V462: Reduced from 30s to fail faster
 				logger.Printf("[MasterSemaphore] Timeout waiting for slot: %s", filepath.Base(h.path))
 				return nil, syscall.ETIMEDOUT
 			}
@@ -2950,6 +3019,7 @@ func main() {
 	go natpmpLoop(backgroundStopChan, globalConfig.NatPMP, logger)
 
 	masterDataSemaphore = make(chan struct{}, globalConfig.MasterConcurrencyLimit)
+	backgroundGoroutineLimiter = make(chan struct{}, 100) // V462: Max 100 concurrent background goroutines
 	startHandleGC()
 
 	// Initialize global helpers
@@ -3604,11 +3674,12 @@ func main() {
 }
 
 // smbdWatchdog detects smbd processes stuck in D-state (uninterruptible FUSE I/O).
-// Level 1 (3 hits / 180s): interrupt all pumps. Level 2 (10 hits / 600s): graceful restart.
+// V462: Accelerated thresholds — Level 1 (2 hits / 120s): interrupt all pumps.
+// Level 2 (5 hits / 300s): graceful restart. Previously 180s/600s was too slow.
 func smbdWatchdog() {
-	const checkInterval = 60 * time.Second
-	const unblockThreshold = 3  // 180s - Emergency unblock (interrupt all pumps)
-	const restartThreshold = 10 // 600s - Full restart (persistent stall)
+	const checkInterval = 30 * time.Second   // V462: Check every 30s (was 60s)
+	const unblockThreshold = 2               // 120s - Emergency unblock (interrupt all pumps)
+	const restartThreshold = 5               // 300s - Full restart (persistent stall)
 	consecutiveHits := 0
 
 	ticker := time.NewTicker(checkInterval)
@@ -3619,7 +3690,7 @@ func smbdWatchdog() {
 			consecutiveHits++
 			logger.Printf("[Watchdog] D-state smbd detected (%d/%d)", consecutiveHits, restartThreshold)
 
-			// Level 1 (3 consecutive hits): soft-interrupt all pumps to unblock hung FUSE reads.
+			// V462: Level 1 (2 consecutive hits): soft-interrupt all pumps to unblock hung FUSE reads.
 			// Only closes pipe readers — pumps stay alive and will retry on next FUSE read.
 			// Preserves pump survival during temporary peer shortages (swarm may recover).
 			if consecutiveHits == unblockThreshold {
@@ -3636,7 +3707,7 @@ func smbdWatchdog() {
 				})
 			}
 
-			// Level 2 (10 consecutive hits): graceful restart.
+			// V462: Level 2 (5 consecutive hits): graceful restart.
 			if consecutiveHits >= restartThreshold {
 				logger.Printf("[Watchdog] D-state STILL persistent for %ds — triggering graceful restart",
 					consecutiveHits*int(checkInterval/time.Second))

@@ -22,12 +22,14 @@ type NativeClient struct {
 	// Stateless client
 	activeHashes  sync.Map      // Map[string]bool - Fast lookup for active torrents
 	wakeSemaphore chan struct{} // V239: Limit concurrent Wake calls (max 10)
+	fetchSemaphore chan struct{} // V462: Limit concurrent FetchBlock goroutines (max 50)
 }
 
 // NewNativeClient creates a new native bridge client
 func NewNativeClient() *NativeClient {
 	return &NativeClient{
-		wakeSemaphore: make(chan struct{}, 25), // Max 25 concurrent Wake operations
+		wakeSemaphore:  make(chan struct{}, 25),              // Max 25 concurrent Wake operations
+		fetchSemaphore: make(chan struct{}, 50),              // V462: Max 50 concurrent FetchBlock goroutines
 	}
 }
 
@@ -352,6 +354,15 @@ func (r *NativeReader) IsIdle(d time.Duration) bool {
 
 // FetchBlock performs an atomic, stateless read from the Torrent Core.
 func (c *NativeClient) FetchBlock(hash string, fileID int, offset int64, p []byte) (int, error) {
+	// V462: Bounded semaphore to prevent goroutine pile-up under cache-miss burst.
+	// Without this, random seeks during Plex scans could spawn hundreds of goroutines.
+	select {
+	case c.fetchSemaphore <- struct{}{}:
+		defer func() { <-c.fetchSemaphore }()
+	case <-time.After(5 * time.Second):
+		return 0, fmt.Errorf("FetchBlock semaphore timeout (system busy)")
+	}
+
 	// V255: Use PeekTorrent — same reasoning as startStream above.
 	t := torr.PeekTorrent(hash)
 	if t == nil || t.Torrent == nil {
