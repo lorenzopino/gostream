@@ -493,11 +493,42 @@ After each successful action:
 
 ## 9. Error Handling & Resilience
 
+### API Error Handling Protocol
+
+All `/api/ai/*` endpoints return structured errors, never bare HTTP status codes:
+
+```json
+{
+  "error": "validation_failed",
+  "details": "Field 'torrent_id' is required but was null",
+  "schema_hint": "replace_torrent requires: {\"torrent_id\": \"string\", \"new_magnet\": \"magnet:?xt=...\"}",
+  "retry_allowed": true
+}
+```
+
+### Retry Strategy (Two Categories)
+
+| Error Type | Examples | Retry Behavior |
+|---|---|---|
+| **Validation** (bad payload) | Missing field, wrong type, invalid format | Max 2 attempts: original + auto-correction from `schema_hint`. If fails → STOP, escalation |
+| **Transient** (infrastructure) | Timeout, connection refused, 503, rate limit | 3-5 attempts with exponential backoff (1s, 2s, 4s). If fails → STOP, escalation |
+| **Auth** (401/403) | Invalid/missing API key | 0 retries → STOP immediately |
+
+### Self-Correction Flow
+
+When Hermes makes a tool call that returns a 400 validation error:
+1. Parse `schema_hint` and `details` from the response
+2. Fix the payload
+3. Retry ONCE
+4. If it fails again → STOP and report: `"❌ Cannot call GoStream API after self-correction: [error]"`
+
+### Additional Scenarios
+
 | Scenario | Behavior |
 |---|---|
 | Hermes unreachable | Queue persists on disk, retry on next flush cycle |
 | Subagent crashes | Dispatcher detects dead subagent, logs error, retries from queue |
-| MCP tool fails | Subagent logs failure, reports to user, continues with other issues |
+| MCP tool fails after retries | Subagent logs failure, reports to user, continues with other issues |
 | Action history full | Prune entries older than 7 days |
 | Queue full | Drop lowest-priority batch (shouldn't happen with normal loads) |
 | API rate limit (TMDB/Prowlarr) | Back off and retry after cooldown |
