@@ -21,7 +21,6 @@ type Buffer struct {
 	onFlush func(IssueBatch) // callback when flushed
 	stopCh  chan struct{}
 	timer   *time.Timer
-	stopped bool
 }
 
 // NewBuffer creates a new issue buffer.
@@ -76,19 +75,19 @@ func (b *Buffer) Len() int {
 	return len(b.issues)
 }
 
-// Stop stops the buffer's flush timer and flushes any remaining issues.
+// Stop stops the buffer's flush timer.
 func (b *Buffer) Stop() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.stopped {
-		return
+	select {
+	case <-b.stopCh:
+		return // already stopped
+	default:
+		close(b.stopCh)
 	}
-	b.stopped = true
 	if b.timer != nil {
 		b.timer.Stop()
 	}
-	// Flush remaining issues on stop
-	b.flushLocked()
 }
 
 func (b *Buffer) resetTimer() {
@@ -98,19 +97,19 @@ func (b *Buffer) resetTimer() {
 }
 
 func (b *Buffer) resetTimerLocked() {
-	if b.stopped {
-		return
-	}
 	if b.timer != nil {
 		b.timer.Stop()
 	}
 	b.timer = time.AfterFunc(b.cfg.FlushTimeout, func() {
 		b.mu.Lock()
-		defer b.mu.Unlock()
-		if b.stopped {
+		select {
+		case <-b.stopCh:
+			b.mu.Unlock()
 			return
+		default:
 		}
 		b.flushLocked()
+		b.mu.Unlock()
 	})
 }
 
@@ -138,7 +137,7 @@ func (b *Buffer) flushLocked() {
 	}
 
 	if b.onFlush != nil {
-		// Unlock before calling onFlush to avoid deadlock (onFlush may call Add)
+		// Unlock before calling onFlush to avoid deadlock
 		b.mu.Unlock()
 		b.onFlush(batch)
 		b.mu.Lock()

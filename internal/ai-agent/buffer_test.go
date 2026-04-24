@@ -1,6 +1,7 @@
 package aiagent
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -72,21 +73,27 @@ func TestBuffer_FlushOnSize(t *testing.T) {
 	})
 
 	now := time.Now()
+	// Use unique TorrentID values to avoid dedup
 	for i := 0; i < 3; i++ {
 		buf.Add(Issue{
 			Type:        "dead_torrent",
 			Priority:    "B",
-			TorrentID:   "abc",
+			TorrentID:   fmt.Sprintf("torrent-%d", i),
 			File:        "Movie.mkv",
 			FirstSeen:   now,
 			Occurrences: 1,
 		})
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	// flushLocked is called synchronously when size threshold is hit,
+	// but the onFlush callback runs with the mutex released, so we give it a tiny moment
+	time.Sleep(10 * time.Millisecond)
 
 	if len(flushedBatches) == 0 {
 		t.Fatal("expected flush on size")
+	}
+	if len(flushedBatches[0].Issues) != 3 {
+		t.Fatalf("expected 3 issues in batch, got %d", len(flushedBatches[0].Issues))
 	}
 }
 
