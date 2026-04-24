@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 
 	"gostream/internal/catalog/tmdb"
 	"gostream/internal/config"
+	"gostream/internal/gostorm/settings"
 	"gostream/internal/prowlarr"
 	"gostream/internal/syncer/engines"
 	"gostream/internal/syncer/quality"
@@ -439,7 +441,40 @@ func runMovieDownload(job *DemandJob) {
 		return
 	}
 
-	// 2. Find best torrent via Prowlarr
+	// V469: Check if movie already exists as MKV in the library.
+	// If it does, extract the torrent hash from the MKV stub and use that
+	// instead of searching for a new torrent via Prowlarr.
+	existingHash, existingFile := findExistingMovieMKV(imdbID)
+	if existingHash != "" {
+		logger.Printf("[MovieDownload] movie already present: %s (hash=%s, file=%s)",
+			details.Title, existingHash, existingFile)
+		// Use the existing torrent hash — no need to search Prowlarr
+		job.Status = "downloading"
+		hash := existingHash
+		t := getOrCreateTorrentByHash(hash)
+		if t == nil {
+			job.Status = "failed"
+			job.Error = fmt.Sprintf("torrent %s not found or info timeout", hash)
+			return
+		}
+		// Torrent already has info (GotInfo called in getOrCreateTorrentByHash)
+		// Trigger download of all pieces
+		t.Torrent.DownloadAll()
+		if settings.BTsets.DisablePreloadSeeding {
+			t.SetUploadLimit(0)
+			t.SetSeedMode(false)
+		}
+		logger.Printf("[MovieDownload] waiting for download: TMDB %d, hash=%s", job.TMDBID, hash)
+		downloadCtx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+		defer cancel()
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		// ... rest of download loop
+		waitForDownloadCompletion(job, t, hash, downloadCtx, ticker)
+		return
+	}
+
+	// 2. Movie not present — find best torrent via Prowlarr
 	pc := prowlarr.NewClient(globalConfig.Prowlarr)
 	if pc == nil {
 		job.Status = "failed"
@@ -548,6 +583,228 @@ func runMovieDownload(job *DemandJob) {
 					job.TMDBID, hash, float64(totalLength)/1024/1024/1024)
 
 				// 6. Trigger Jellyfin refresh
+				if job.JellyfinItemID != "" {
+					triggerJellyfinRefreshForMovie(job)
+				}
+				return
+			}
+
+			logger.Printf("[MovieDownload] progress: %.1f%% (%d/%d pieces, %.1f/%.1f GB)",
+				progress*100,
+				stats.PiecesComplete, totalPieces,
+				float64(downloadedBytes)/1024/1024/1024,
+				float64(totalLength)/1024/1024/1024)
+		}
+	}
+}
+
+// findExistingMovieMKV scans the movies directory for an MKV stub matching the IMDB ID.
+// Returns the torrent hash and file path if found.
+func findExistingMovieMKV(imdbID string) (hash string, filePath string) {
+	moviesDir := globalConfig.PhysicalSourcePath
+	if moviesDir == "" {
+		return "", ""
+	}
+	moviesDir = filepath.Join(moviesDir, "movies")
+	if _, err := os.Stat(moviesDir); err != nil {
+		return "", ""
+	}
+
+	reIMDB := regexp.MustCompile(`^tt\d+$`)
+	if !reIMDB.MatchString(imdbID) {
+		return "", ""
+	}
+
+	entries, _ := os.ReadDir(moviesDir)
+	for _, e := range entries {
+		if !strings.HasSuffix(strings.ToLower(e.Name()), ".mkv") {
+			continue
+		}
+		path := filepath.Join(moviesDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		content := strings.TrimSpace(string(data))
+		// MKV stubs are JSON files with "imdb" field
+		if strings.HasPrefix(content, "{") {
+			var obj map[string]interface{}
+			if err := json.Unmarshal([]byte(content), &obj); err == nil {
+				if imdb, ok := obj["imdb"].(string); ok && imdb == imdbID {
+					// Try explicit hash field first
+					if h, ok := obj["hash"].(string); ok && h != "" {
+						return h, path
+					}
+					// Try extracting from magnet URL
+					if magnet, ok := obj["magnet"].(string); ok && magnet != "" {
+						if h := extractHashFromURL(magnet); h != "" {
+							return h, path
+						}
+					}
+					// Try extracting from stream URL
+					if url, ok := obj["url"].(string); ok && url != "" {
+						if h := extractHashFromURL(url); h != "" {
+							return h, path
+						}
+					}
+				}
+			}
+		} else {
+			// Old format: line-based MKV stub
+			lines := strings.Split(content, "\n")
+			if len(lines) >= 4 && strings.TrimSpace(lines[3]) == imdbID {
+				// Found matching MKV — extract hash from filename
+				base := strings.TrimSuffix(e.Name(), ".mkv")
+				if idx := strings.LastIndex(base, "_"); idx > 0 {
+					hash8 := base[idx+1:]
+					// Search all torrents for one ending with this suffix
+					for _, tr := range torr.ListTorrent() {
+						if tr != nil && strings.HasSuffix(tr.Hash().HexString(), hash8) {
+							return tr.Hash().HexString(), path
+						}
+					}
+				}
+			}
+		}
+	}
+	return "", ""
+}
+
+// extractHashFromURL extracts the torrent hash from a stream URL.
+func extractHashFromURL(url string) string {
+	// URL format: http://127.0.0.1:8090/stream?link=HASH&index=1&play
+	// or: http://127.0.0.1:8090/stream?link=magnet:?xt=urn:btih:HASH&index=0&play
+	if idx := strings.Index(url, "link="); idx < 0 {
+		return ""
+	} else {
+		rest := url[idx+5:]
+		if amp := strings.Index(rest, "&"); amp > 0 {
+			rest = rest[:amp]
+		}
+		// Check if it's a magnet URL
+		if btihIdx := strings.Index(rest, "btih:"); btihIdx >= 0 {
+			return rest[btihIdx+5:]
+		}
+		// Direct hash format
+		if len(rest) >= 40 {
+			return rest[:40]
+		}
+		return ""
+	}
+}
+
+// getOrCreateTorrentByHash finds an existing torrent by hash or adds it if not present.
+func getOrCreateTorrentByHash(hash string) *torr.Torrent {
+	// Try existing torrent first
+	t := torr.GetTorrent(hash)
+	if t != nil {
+		logger.Printf("[MovieDownload] found existing torrent in engine: %s", hash[:16])
+		// Wait for info to be ready (may already be ready if torrent is active)
+		if t.GotInfo() {
+			return t
+		}
+		logger.Printf("[MovieDownload] GotInfo timeout for existing torrent %s", hash[:16])
+		return nil
+	}
+
+	// Not in engine — find the magnet from the MKV stub and add it
+	moviesDir := globalConfig.PhysicalSourcePath
+	if moviesDir != "" {
+		moviesDir = filepath.Join(moviesDir, "movies")
+		entries, _ := os.ReadDir(moviesDir)
+		for _, e := range entries {
+			if !strings.HasSuffix(strings.ToLower(e.Name()), ".mkv") {
+				continue
+			}
+			path := filepath.Join(moviesDir, e.Name())
+			data, _ := os.ReadFile(path)
+			if len(data) == 0 {
+				continue
+			}
+			content := strings.TrimSpace(string(data))
+			if strings.HasPrefix(content, "{") {
+				var obj map[string]interface{}
+				if err := json.Unmarshal([]byte(content), &obj); err == nil {
+					if m, ok := obj["magnet"].(string); ok && m != "" {
+						// Check if this magnet matches our hash
+						if extractedHash := extractHashFromURL(m); strings.EqualFold(extractedHash, hash) {
+							logger.Printf("[MovieDownload] found matching MKV stub: %s", e.Name())
+							// Add the torrent to the engine
+							spec := &torrent.TorrentSpec{
+								InfoHash: metainfo.NewHashFromHex(hash),
+							}
+							addedTorrent, err := torr.AddTorrentForPreDownload(spec, e.Name(), "", "", "movie")
+							if err != nil {
+								logger.Printf("[MovieDownload] AddTorrentForPreDownload error: %v", err)
+								continue
+							}
+							if addedTorrent == nil {
+								logger.Printf("[MovieDownload] AddTorrentForPreDownload returned nil")
+								continue
+							}
+							logger.Printf("[MovieDownload] re-added torrent from MKV stub: %s, waiting for info...", hash[:16])
+							// Wait for GotInfo before returning
+							if addedTorrent.GotInfo() {
+								return addedTorrent
+							}
+							logger.Printf("[MovieDownload] GotInfo timeout for %s", hash[:16])
+							return nil
+						}
+					}
+				}
+			}
+		}
+	}
+
+	logger.Printf("[MovieDownload] torrent not found for hash %s", hash[:16])
+	return nil
+}
+
+// waitForDownloadCompletion polls torrent stats until all pieces are downloaded.
+func waitForDownloadCompletion(job *DemandJob, t *torr.Torrent, hash string, ctx context.Context, ticker *time.Ticker) {
+	totalLength := int64(0)
+	totalPieces := 0
+	if t != nil {
+		totalLength = t.Length()
+		if info := t.Info(); info != nil {
+			totalPieces = info.NumPieces()
+		}
+	}
+
+	getTorrent := func() *torr.Torrent {
+		return torr.GetTorrent(hash)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			job.Status = "failed"
+			job.Error = "download timed out after 2 hours"
+			logger.Printf("[MovieDownload] timeout: TMDB %d", job.TMDBID)
+			return
+		case <-ticker.C:
+			cur := getTorrent()
+			if cur == nil {
+				logger.Printf("[MovieDownload] torrent lost during download: %s", hash)
+				job.Status = "failed"
+				job.Error = fmt.Sprintf("torrent lost: hash=%s", hash[:min(8, len(hash))])
+				return
+			}
+			stats := cur.Stats()
+			var progress float64
+			if totalPieces > 0 {
+				progress = float64(stats.PiecesComplete) / float64(totalPieces)
+			}
+			job.Progress = math.Min(progress, 1.0)
+			downloadedBytes := int64(float64(totalLength) * progress)
+			job.DownloadedBytes = downloadedBytes
+			job.TotalBytes = totalLength
+
+			if totalPieces > 0 && stats.PiecesComplete >= totalPieces {
+				job.Status = "completed"
+				job.Progress = 1.0
+				logger.Printf("[MovieDownload] completed: TMDB %d, hash=%s, size=%.1fGB",
+					job.TMDBID, hash, float64(totalLength)/1024/1024/1024)
 				if job.JellyfinItemID != "" {
 					triggerJellyfinRefreshForMovie(job)
 				}
