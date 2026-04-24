@@ -116,16 +116,22 @@ func AddTorrent(spec *torrent.TorrentSpec, title, poster string, data string, ca
 }
 
 // AddTorrentForPreDownload adds a torrent for background pre-download.
-// Unlike normal AddTorrent, this sets low priority and disables seeding
-// when DisablePreloadSeeding is enabled.
+// Unlike normal AddTorrent, this sets low priority, disables seeding,
+// and triggers full piece download via DownloadAll().
 func AddTorrentForPreDownload(spec *torrent.TorrentSpec, title, poster string, data string, category string) (*Torrent, error) {
 	torr, err := AddTorrent(spec, title, poster, data, category)
 	if err != nil {
 		return nil, err
 	}
 
-	// Set low priority
+	// Set low priority (GoStream metadata flag, not piece priority)
 	torr.IsPriority = false
+
+	// V468: Trigger actual piece downloading.
+	// Without this, all pieces remain at PiecePriorityNone and the torrent
+	// connects to peers but downloads zero bytes. DownloadAll() raises all
+	// piece priorities to Normal, enabling background download.
+	torr.Torrent.DownloadAll()
 
 	// Disable seeding if configured
 	if sets.BTsets.DisablePreloadSeeding {
