@@ -3635,6 +3635,11 @@ func main() {
 	// Crea root node virtuale
 	rootData := &VirtualMkvRoot{sourcePath: source}
 
+	// V465: Auto-healing mount — detect and force-unmount stale mounts before mounting.
+	// On macOS, if the process restarts without a clean unmount, the mount becomes
+	// "Device not configured" and blocks all I/O until manually force-unmounted.
+	ensureCleanMount(mount)
+
 	// Enable attribute caching from config
 	attrTimeout := time.Duration(globalConfig.AttrTimeoutSeconds * float64(time.Second))
 	entryTimeout := time.Duration(globalConfig.EntryTimeoutSeconds * float64(time.Second))
@@ -3669,8 +3674,65 @@ func main() {
 	setupSpotlightBlocking(mount, source)
 
 	go smbdWatchdog()
+	go mountHealthChecker(mount) // V465: Auto-restart if mount becomes stale
 
 	server.Wait()
+}
+
+// ensureCleanMount detects and force-unmounts stale FUSE mounts on macOS.
+// V465: Without this, a process restart leaves the mount in "Device not configured"
+// state, making all files invisible to Jellyfin/Plex until manual intervention.
+func ensureCleanMount(mountPath string) {
+	// Check if the mount point exists and is accessible
+	testPath := filepath.Join(mountPath, "movies")
+	_, err := os.ReadDir(testPath)
+	if err == nil {
+		// Mount is healthy and accessible — nothing to do
+		return
+	}
+
+	// Check if the error indicates a stale mount
+	if strings.Contains(err.Error(), "Device not configured") ||
+		strings.Contains(err.Error(), "input/output error") {
+		logger.Printf("[V465] Stale FUSE mount detected at %s — force unmounting...", mountPath)
+
+		// Try diskutil unmount force (macOS, no sudo required)
+		cmd := exec.Command("diskutil", "unmount", "force", mountPath)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			logger.Printf("[V465] diskutil unmount failed: %v — %s", err, string(out))
+		} else {
+			logger.Printf("[V465] Stale mount force-unmounted successfully")
+		}
+
+		// Brief pause to let kernel clean up
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// mountHealthChecker periodically verifies the FUSE mount is responsive.
+// V465: If the mount becomes stale (macOS sleep, kernel disconnect), logs a warning.
+// The actual recovery requires a process restart, which launchd handles automatically.
+func mountHealthChecker(mountPath string) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	staleCount := 0
+	for range ticker.C {
+		testPath := filepath.Join(mountPath, "movies")
+		_, err := os.ReadDir(testPath)
+		if err != nil {
+			staleCount++
+			if staleCount >= 2 {
+				logger.Printf("[MountHealth] FUSE mount appears stale (%d consecutive checks) — restart recommended", staleCount)
+				// On macOS, the only recovery is process restart. launchd will restart us
+				// if we exit, so exit gracefully.
+				logger.Printf("[MountHealth] initiating graceful exit for auto-restart...")
+				os.Exit(1)
+			}
+		} else {
+			staleCount = 0
+		}
+	}
 }
 
 // smbdWatchdog detects smbd processes stuck in D-state (uninterruptible FUSE I/O).
