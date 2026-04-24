@@ -411,6 +411,9 @@ func runMovieDownload(job *DemandJob) {
 		if r := recover(); r != nil {
 			job.Status = "failed"
 			job.Error = fmt.Sprintf("panic: %v", r)
+			logger.Printf("[MovieDownload] PANIC in job %s: %v", job.JobID, r)
+		} else if job.Status == "failed" {
+			logger.Printf("[MovieDownload] job %s FAILED: %s", job.JobID, job.Error)
 		}
 		job.CompletedAt = time.Now()
 		logger.Printf("[MovieDownload] job %s completed: status=%s",
@@ -498,6 +501,13 @@ func runMovieDownload(job *DemandJob) {
 			logger.Printf("[MovieDownload] timeout: TMDB %d", job.TMDBID)
 			return
 		case <-ticker.C:
+			// V467: Guard against nil torrent — can happen if torrent is removed while downloading
+			if t == nil {
+				job.Status = "failed"
+				job.Error = "torrent reference lost during download"
+				logger.Printf("[MovieDownload] torrent reference lost: TMDB %d", job.TMDBID)
+				return
+			}
 			stats := t.Stats()
 			var progress float64
 			if totalPieces > 0 {
