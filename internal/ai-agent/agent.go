@@ -2,6 +2,7 @@ package aiagent
 
 import (
 	"log"
+	"net/http"
 	"path/filepath"
 	"time"
 )
@@ -40,6 +41,7 @@ type Agent struct {
 
 // New creates and initializes the AI agent subsystem.
 // If cfg.Enabled is false, returns nil (no-op).
+// If GoStorm API is unreachable, logs a warning and returns nil (graceful degradation).
 func New(cfg Config, globalLogger *log.Logger) *Agent {
 	if !cfg.Enabled {
 		return nil
@@ -47,6 +49,40 @@ func New(cfg Config, globalLogger *log.Logger) *Agent {
 
 	if cfg.StateDir == "" {
 		cfg.StateDir = "."
+	}
+
+	// Verify GoStorm API is responding before starting detectors
+	// Retry up to 3 times with 5s intervals
+	goStormReady := false
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err := http.Get("http://localhost:8090/torrents")
+		if err == nil && resp.StatusCode == 200 {
+			resp.Body.Close()
+			goStormReady = true
+			break
+		}
+		if attempt < 2 {
+			globalLogger.Printf("[AIAgent] GoStorm API not ready (attempt %d/3), waiting 5s...", attempt+1)
+			time.Sleep(5 * time.Second)
+		}
+	}
+	if !goStormReady {
+		globalLogger.Printf("[AIAgent] WARNING: GoStorm API unreachable after 3 attempts — skipping agent startup (queue will persist)")
+		// Still create the logger and queue so issues can be queued for later
+		aiLog, err := NewAILogger(filepath.Join(cfg.StateDir, "logs"))
+		if err != nil {
+			aiLog = &AILogger{}
+		}
+		queuePath := filepath.Join(cfg.StateDir, "STATE", "ai-agent-queue.json")
+		queue := NewQueue(queuePath)
+		return &Agent{
+			cfg:     cfg,
+			Logger:  globalLogger,
+			AILog:   aiLog,
+			Queue:   queue,
+			Buffer:  NewBuffer(BufferConfig{FlushTimeout: time.Duration(cfg.DebounceSeconds) * time.Second, MaxSize: cfg.MaxBufferSize}),
+			Webhook: NewWebhook(DefaultWebhookConfig(), globalLogger),
+		}
 	}
 
 	aiLog, err := NewAILogger(filepath.Join(cfg.StateDir, "logs"))
@@ -106,7 +142,20 @@ func (a *Agent) Start() {
 	}
 	a.API.Register()
 	a.Detectors.Start()
-	a.Logger.Printf("[AIAgent] started (webhook: %s, debounce: %ds)", a.cfg.WebhookURL, a.cfg.DebounceSeconds)
+
+	// Queue recovery logging
+	status := a.Queue.Status()
+	if status.PendingBatches > 0 || status.FailedBatches > 0 {
+		a.AILog.Warn("agent", "queue has pending/failed batches from previous session",
+			F("pending", status.PendingBatches),
+			F("failed", status.FailedBatches),
+			F("processing", status.ProcessingBatches),
+			F("action_needed", "retry_on_webhook"),
+		)
+	}
+
+	a.Logger.Printf("[AIAgent] started (webhook: %s, debounce: %ds, queue: %d pending)",
+		a.cfg.WebhookURL, a.cfg.DebounceSeconds, status.PendingBatches)
 }
 
 // Stop stops all subsystems.
