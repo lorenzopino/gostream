@@ -493,6 +493,18 @@ After each successful action:
 
 ## 9. Error Handling & Resilience
 
+### Mac Restart Resilience (Global Requirement)
+
+**ALL components** (GoStream AI agent, Hermes skills, action history, queue) MUST survive and recover from a macOS restart:
+
+- **GoStream AI Agent**: Disk queue persists on disk, reloads on startup. Detectors restart with GoStream. Buffered issues in memory are lost (acceptable — they'll be re-detected on next cycle).
+- **Hermes Queue**: File-based queue on disk survives restart. Hermes cron resumes polling on next scheduled run.
+- **Action History**: JSON file persists — no in-memory state that isn't reloaded.
+- **Hermes Skills**: Markdown files on disk — inherently persistent. No runtime state to recover.
+- **launchd Configuration**: Both GoStream and Hermes must have `RunAtLoad: true` and `KeepAlive` configured so they auto-start after reboot.
+- **GoStream Startup**: AI agent initializes after GoStorm engine is up — no race condition on torrent API availability.
+- **Graceful Degradation**: If Hermes is not yet running when GoStream starts, webhook pushes fail gracefully (batch stays in queue). GoStream never crashes because Hermes is unavailable.
+
 ### API Error Handling Protocol
 
 All `/api/ai/*` endpoints return structured errors, never bare HTTP status codes:
