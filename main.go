@@ -3324,15 +3324,37 @@ func main() {
 	globalDirCache = NewDirCache(10 * time.Second)
 
 	// AI Maintenance Agent subsystem (V1.5.0)
-	aiAgent = aiagent.New(aiagent.Config{
-		Enabled:         globalConfig.AIAgent.Enabled,
-		WebhookURL:      globalConfig.AIAgent.WebhookURL,
-		DebounceSeconds: globalConfig.AIAgent.DebounceSeconds,
-		MaxBufferSize:   globalConfig.AIAgent.MaxBufferSize,
-		StateDir:        globalConfig.RootPath,
-	}, logger)
-	if aiAgent != nil {
-		aiAgent.Start()
+	if globalConfig.AIAgent.Enabled {
+		// Verify GoStorm API is responding before starting AI agent detectors
+		gostormReady := false
+		for attempt := 0; attempt < 3; attempt++ {
+			resp, err := http.Get(globalConfig.GoStormBaseURL + "/torrents")
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == 200 {
+					gostormReady = true
+					break
+				}
+			}
+			if attempt < 2 {
+				logger.Printf("[AIAgent] GoStorm API not ready (attempt %d/3), waiting 5s...", attempt+1)
+				time.Sleep(5 * time.Second)
+			}
+		}
+		if !gostormReady {
+			logger.Printf("[AIAgent] WARNING: GoStorm API unreachable after 3 attempts — skipping AI agent startup (queue will recover on restart)")
+		} else {
+			aiAgent = aiagent.New(aiagent.Config{
+				Enabled:         true,
+				WebhookURL:      globalConfig.AIAgent.WebhookURL,
+				DebounceSeconds: globalConfig.AIAgent.DebounceSeconds,
+				MaxBufferSize:   globalConfig.AIAgent.MaxBufferSize,
+				StateDir:        globalConfig.RootPath,
+			}, logger)
+			if aiAgent != nil {
+				aiAgent.Start()
+			}
+		}
 	}
 
 	http.HandleFunc("/plex/webhook", handlePlexWebhook)
