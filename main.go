@@ -1359,11 +1359,35 @@ func (h *MkvHandle) nativePumpChunk(r *NativeReader, offset, chunkSize, playerOf
 			// For other errors, log and stop pump
 			logger.Printf("[V462] Pump ReadAt error: %v at offset %d for %s",
 				result.err, offset, filepath.Base(h.path))
+			// AI Agent: log pump read error for detector correlation
+			if aiAgent != nil && aiAgent.AILog != nil {
+				aiAgent.AILog.Error("fuse_access", "pump read error",
+					aiagent.F("issue", "pump_error"),
+					aiagent.F("file", filepath.Base(h.path)),
+					aiagent.F("details", map[string]any{
+						"error":  result.err.Error(),
+						"offset": offset,
+					}),
+					aiagent.F("action_needed", "investigate"),
+				)
+			}
 			return true, offset + int64(result.n)
 		}
 	case <-time.After(30 * time.Second):
 		logger.Printf("[V462] Pump ReadAt timeout (30s) for %s at offset %d — interrupting",
 			filepath.Base(h.path), offset)
+		// AI Agent: log pump timeout
+		if aiAgent != nil && aiAgent.AILog != nil {
+			aiAgent.AILog.Error("fuse_access", "pump read timeout",
+				aiagent.F("issue", aiagent.TypeReadStall),
+				aiagent.F("file", filepath.Base(h.path)),
+				aiagent.F("details", map[string]any{
+					"offset":       offset,
+					"timeout_secs": 30,
+				}),
+				aiagent.F("action_needed", "interrupt_and_retry"),
+			)
+		}
 		r.Interrupt()
 		return true, offset
 	}
@@ -1415,6 +1439,19 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 	defer func() {
 		timing.TotalTime = time.Since(timing.StartTime)
 		globalProfilingStats.RecordRead(timing)
+		// AI Agent: log slow reads (>5s = stall)
+		if timing.TotalTime > 5*time.Second && aiAgent != nil && aiAgent.AILog != nil {
+			aiAgent.AILog.Warn("fuse_access", "slow FUSE read detected",
+				aiagent.F("issue", aiagent.TypeReadStall),
+				aiagent.F("file", filepath.Base(h.path)),
+				aiagent.F("details", map[string]any{
+					"read_time_ms": timing.TotalTime.Milliseconds(),
+					"offset_mb":    off / (1024 * 1024),
+					"bytes_read":   timing.BytesRead,
+				}),
+				aiagent.F("action_needed", "investigate"),
+			)
+		}
 	}()
 
 	if off >= h.size {
@@ -2658,6 +2695,17 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			webhookImdbID = m[1]
 		}
 
+		// AI Agent: record webhook event for detector correlation
+		if aiAgent != nil && aiAgent.Buffer != nil && webhookImdbID != "" {
+			aiAgent.Buffer.Add(aiagent.Issue{
+				Type:        aiagent.TypeUnconfirmedPlay,
+				Priority:    aiagent.PriorityA,
+				IMDBID:      webhookImdbID,
+				FirstSeen:   time.Now(),
+				Occurrences: 1,
+			})
+		}
+
 		// Pass 1: Exact matches only (IMDB ID, hash suffix, filename)
 		var exactMatch string
 		var exactState *PlaybackState
@@ -2790,9 +2838,26 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			if exactState.ImdbID == "" && webhookImdbID != "" {
 				exactState.ImdbID = webhookImdbID
 				logger.Printf("[PLEX] IMDB ID cached for future matching: %s → %s", filepath.Base(exactMatch), webhookImdbID)
+				// AI Agent: log IMDB bootstrap event
+				if aiAgent != nil && aiAgent.AILog != nil {
+					aiAgent.AILog.Info("webhook_matcher", "IMDB ID bootstrapped",
+						aiagent.F("file", filepath.Base(exactMatch)),
+						aiagent.F("imdb_id", webhookImdbID),
+						aiagent.F("details", map[string]any{"method": "bootstrap_1c"}),
+					)
+				}
 			}
 			exactState.mu.Unlock()
 			logger.Printf("[PLEX] Playback confirmed by webhook for: %s", filepath.Base(exactMatch))
+
+			// AI Agent: log successful webhook match
+			if aiAgent != nil && aiAgent.AILog != nil {
+				aiAgent.AILog.Info("webhook_matcher", "playback confirmed",
+					aiagent.F("file", filepath.Base(exactMatch)),
+					aiagent.F("imdb_id", webhookImdbID),
+					aiagent.F("event", payload.Event),
+				)
+			}
 
 			if exactState.Hash != "" {
 				h := metainfo.NewHashFromHex(exactState.Hash)
@@ -2801,6 +2866,29 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 					t.SetAggressiveMode(true, GetEffectiveConcurrencyLimit())
 					logger.Printf("[PLEX] High Priority + Aggressive Mode for: %s", exactState.Hash)
 				}
+			}
+		} else {
+			// AI Agent: log webhook no-match for detector correlation
+			playTitle := payload.Metadata.Title
+			if playTitle == "" {
+				playTitle = payload.Metadata.GrandparentTitle
+			}
+			logger.Printf("[Webhook] NO MATCH event=%s imdb_id=%s title=%s year=%d action=unconfirmed_play",
+				payload.Event, webhookImdbID, playTitle, targetYear)
+			if aiAgent != nil && aiAgent.AILog != nil {
+				aiAgent.AILog.Warn("webhook_matcher", "webhook received but no playback matched",
+					aiagent.F("issue", "unconfirmed_play"),
+					aiagent.F("imdb_id", webhookImdbID),
+					aiagent.F("file", playTitle),
+					aiagent.F("event", payload.Event),
+					aiagent.F("details", map[string]any{
+						"title":       playTitle,
+						"series":      payload.Metadata.GrandparentTitle,
+						"year":        targetYear,
+						"registered":  playbackRegistryCount(),
+					}),
+					aiagent.F("action_needed", "verify"),
+				)
 			}
 		}
 	} else if payload.Event == "media.stop" {
@@ -2939,6 +3027,28 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	// AI Agent: log when webhook has no match (unconfirmed play)
+	if payload.Event == "media.play" && aiAgent != nil && aiAgent.AILog != nil {
+		// Check if we found a match by re-scanning the registry
+		found := false
+		playbackRegistry.Range(func(key, value interface{}) bool {
+			state := value.(*PlaybackState)
+			if state.IsHealthy && !state.IsStopped {
+				found = true
+				return false
+			}
+			return true
+		})
+		if !found && payload.Metadata.Title != "" {
+			aiAgent.AILog.Warn("webhook_matcher", "webhook received but no registered playback matched",
+				aiagent.F("issue", "unconfirmed_play"),
+				aiagent.F("file", payload.Metadata.Title),
+				aiagent.F("action_needed", "investigate"),
+			)
+		}
+	}
+
 	w.WriteHeader(200)
 }
 
