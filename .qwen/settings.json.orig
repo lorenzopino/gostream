@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "hippo last-sleep --path .hippo/logs/qwen-code-sleep.log",
+            "name": "hippo-last-sleep",
+            "description": "Load consolidated memories from previous session",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "hippo session-end --log-file .hippo/logs/qwen-code-sleep.log",
+            "name": "hippo-session-end",
+            "description": "Consolidate session memories and sleep",
+            "timeout": 30000
+          }
+        ]
+      }
+    ]
+  }
+}
