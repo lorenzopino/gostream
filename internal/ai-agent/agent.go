@@ -140,8 +140,12 @@ func (a *Agent) Start() {
 	if a == nil {
 		return
 	}
-	a.API.Register()
-	a.Detectors.Start()
+	if a.API != nil {
+		a.API.Register()
+	}
+	if a.Detectors != nil {
+		a.Detectors.Start()
+	}
 
 	// Queue recovery logging
 	status := a.Queue.Status()
