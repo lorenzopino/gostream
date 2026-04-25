@@ -25,6 +25,7 @@ import (
 	"gostream/internal/syncer/quality"
 	"gostream/internal/syncer/scheduler"
 	"gostream/internal/updater"
+	"gostream/internal/ai-agent"
 	"io"
 	"log"
 	"net"
@@ -87,6 +88,7 @@ var nativeBridge *NativeClient
 var globalCleanupManager *CleanupManager
 var globalTorrentRemover *TorrentRemover
 var globalConfig Config
+var aiAgent *aiagent.Agent
 
 // Global Prowlarr client for indexer queries (nil when disabled).
 var prowlarrClient *prowlarr.Client
@@ -3211,6 +3213,18 @@ func main() {
 
 	globalDirCache = NewDirCache(10 * time.Second)
 
+	// AI Maintenance Agent subsystem (V1.5.0)
+	aiAgent = aiagent.New(aiagent.Config{
+		Enabled:         globalConfig.AIAgent.Enabled,
+		WebhookURL:      globalConfig.AIAgent.WebhookURL,
+		DebounceSeconds: globalConfig.AIAgent.DebounceSeconds,
+		MaxBufferSize:   globalConfig.AIAgent.MaxBufferSize,
+		StateDir:        globalConfig.RootPath,
+	}, logger)
+	if aiAgent != nil {
+		aiAgent.Start()
+	}
+
 	http.HandleFunc("/plex/webhook", handlePlexWebhook)
 
 	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
@@ -3627,6 +3641,9 @@ func main() {
 		}
 		if globalCleanupManager != nil {
 			globalCleanupManager.Stop()
+		}
+		if aiAgent != nil {
+			aiAgent.Stop()
 		}
 
 		// Try to unmount gracefully

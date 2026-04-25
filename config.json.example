@@ -78,5 +78,12 @@
         }
       ]
     }
+  },
+
+  "ai_agent": {
+    "enabled": false,
+    "webhook_url": "http://localhost:PORT/webhook",
+    "debounce_seconds": 300,
+    "max_buffer_size": 20
   }
 }

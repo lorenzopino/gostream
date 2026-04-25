@@ -15,14 +15,11 @@ import (
 
 // DetectorConfig holds configuration for all detectors.
 type DetectorConfig struct {
-	CheckInterval      time.Duration // how often to poll for issues
-	LogTailWindow      time.Duration // how far back to scan logs
-	MaxErrorsPerSpike  int           // error spike threshold (>N in window = spike)
-	SlowStartupMs      int           // threshold for slow startup (ms)
-	TimeoutStartupMs   int           // threshold for timeout startup (ms)
-	LowSeederThreshold int           // seeder count below which = low seeders
-	NoDownloadTimeout  time.Duration // time with 0 KBps = no download
-	ReadStallTimeout   time.Duration // per-block read timeout = stall
+	CheckInterval      time.Duration
+	LogTailWindow      time.Duration
+	MaxErrorsPerSpike  int
+	LowSeederThreshold int
+	NoDownloadTimeout  time.Duration
 }
 
 // DefaultDetectorConfig returns sensible defaults.
@@ -31,8 +28,6 @@ func DefaultDetectorConfig() DetectorConfig {
 		CheckInterval:      60 * time.Second,
 		LogTailWindow:      5 * time.Minute,
 		MaxErrorsPerSpike:  5,
-		SlowStartupMs:      15000,
-		TimeoutStartupMs:   30000,
 		LowSeederThreshold: 3,
 		NoDownloadTimeout:  60 * time.Second,
 	}
@@ -40,16 +35,16 @@ func DefaultDetectorConfig() DetectorConfig {
 
 // Detectors manages all issue detection goroutines.
 type Detectors struct {
-	cfg    DetectorConfig
-	buffer *Buffer
-	logger *log.Logger
-	aiLog  *AILogger
-	stopCh chan struct{}
-	once   sync.Once
-
-	// Internal state for tracking
-	torrentStates   map[string]torrentState
-	torrentStatesMu sync.RWMutex
+	cfg            DetectorConfig
+	buffer         *Buffer
+	logger         *log.Logger
+	aiLog          *AILogger
+	stopCh         chan struct{}
+	once           sync.Once
+	torrentStates    map[string]torrentState
+	torrentStatesMu  sync.RWMutex
+	recentWebhooks   map[string]time.Time
+	recentWebhooksMu sync.RWMutex
 }
 
 type torrentState struct {
@@ -59,15 +54,36 @@ type torrentState struct {
 	lastChecked  time.Time
 }
 
-// NewDetectors creates and initializes all detector goroutines.
+type logError struct {
+	ts  time.Time
+	msg string
+}
+
+// goStormTorrent represents a torrent from GoStorm API.
+type goStormTorrent struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Stats struct {
+		Peers         int     `json:"peers"`
+		Seeders       int     `json:"seeders"`
+		DownloadSpeed float64 `json:"download_speed"`
+	} `json:"stats"`
+}
+
+type goStormResponse struct {
+	Result []goStormTorrent `json:"result"`
+}
+
+// NewDetectors creates detector goroutines.
 func NewDetectors(cfg DetectorConfig, buffer *Buffer, logger *log.Logger, aiLog *AILogger) *Detectors {
 	return &Detectors{
-		cfg:           cfg,
-		buffer:        buffer,
-		logger:        logger,
-		aiLog:         aiLog,
-		stopCh:        make(chan struct{}),
-		torrentStates: make(map[string]torrentState),
+		cfg:            cfg,
+		buffer:         buffer,
+		logger:         logger,
+		aiLog:          aiLog,
+		stopCh:         make(chan struct{}),
+		torrentStates:  make(map[string]torrentState),
+		recentWebhooks: make(map[string]time.Time),
 	}
 }
 
@@ -75,6 +91,7 @@ func NewDetectors(cfg DetectorConfig, buffer *Buffer, logger *log.Logger, aiLog 
 func (d *Detectors) Start() {
 	go d.torrentHealthLoop()
 	go d.logMonitorLoop()
+	go d.webhookMatcherLoop()
 	d.logger.Printf("[AIAgent] detectors started")
 }
 
@@ -84,6 +101,13 @@ func (d *Detectors) Stop() {
 		close(d.stopCh)
 		d.logger.Printf("[AIAgent] detectors stopped")
 	})
+}
+
+// RecordWebhookMatch records a successful webhook match for later correlation.
+func (d *Detectors) RecordWebhookMatch(imdbID string) {
+	d.recentWebhooksMu.Lock()
+	defer d.recentWebhooksMu.Unlock()
+	d.recentWebhooks[imdbID] = time.Now()
 }
 
 // --- Torrent Health Detector ---
@@ -121,7 +145,7 @@ func (d *Detectors) checkTorrentHealth() {
 		d.torrentStates[t.ID] = current
 		d.torrentStatesMu.Unlock()
 
-		// Check for dead torrent (0 seeders, existed for a while)
+		// Dead torrent (0 seeders, existed for a while)
 		if t.Stats.Seeders == 0 && existed {
 			age := time.Since(prev.lastChecked).Seconds()
 			if age > 60 {
@@ -148,7 +172,7 @@ func (d *Detectors) checkTorrentHealth() {
 			}
 		}
 
-		// Check for low seeders
+		// Low seeders
 		if t.Stats.Seeders > 0 && t.Stats.Seeders < d.cfg.LowSeederThreshold {
 			d.aiLog.Warn("torrent_health", "low seeders",
 				F("issue", TypeLowSeeders),
@@ -169,7 +193,7 @@ func (d *Detectors) checkTorrentHealth() {
 			})
 		}
 
-		// Check for no download (active but 0 KBps)
+		// No download despite active peers
 		if t.Stats.DownloadSpeed == 0 && t.Stats.Seeders > 0 && existed {
 			sinceLast := time.Since(prev.lastChecked)
 			if sinceLast > d.cfg.NoDownloadTimeout {
@@ -212,9 +236,10 @@ func (d *Detectors) logMonitorLoop() {
 			windowMu.Lock()
 			now := time.Now()
 			for _, e := range errors {
-				window = append(window, logError{ts: now, msg: e})
+				window = append(window, logError{ts: now, msg: e.msg})
 			}
 
+			// Prune old entries
 			cutoff := now.Add(-d.cfg.LogTailWindow)
 			filtered := make([]logError, 0, len(window))
 			for _, e := range window {
@@ -222,13 +247,19 @@ func (d *Detectors) logMonitorLoop() {
 					filtered = append(filtered, e)
 				}
 			}
+			window = filtered
 
+			// Count by pattern
 			counts := make(map[string]int)
-			for _, e := range filtered {
+			for _, e := range window {
 				pattern := normalizeErrorPattern(e.msg)
 				counts[pattern]++
+				if _, ok := knownPatterns[pattern]; !ok {
+					knownPatterns[pattern] = 0
+				}
 			}
 
+			// Check for spikes
 			for pattern, count := range counts {
 				if count >= d.cfg.MaxErrorsPerSpike && count > knownPatterns[pattern] {
 					d.aiLog.Warn("log_monitor", "error spike detected",
@@ -261,12 +292,7 @@ func (d *Detectors) logMonitorLoop() {
 	}
 }
 
-type logError struct {
-	ts  time.Time
-	msg string
-}
-
-func (d *Detectors) scanRecentLogErrors() []string {
+func (d *Detectors) scanRecentLogErrors() []logError {
 	const logPath = "logs/gostream.log"
 	data, err := os.ReadFile(logPath)
 	if err != nil {
@@ -278,11 +304,11 @@ func (d *Detectors) scanRecentLogErrors() []string {
 		lines = lines[len(lines)-200:]
 	}
 
-	var errors []string
-	errorRe := regexp.MustCompile(`(?i)(error|fail|timeout|panic|dead|stall)`)
+	var errors []logError
+	errorRe := regexp.MustCompile(`\[(\w+)\].*?(?i)(error|fail|timeout|panic|dead|stall)`)
 	for _, line := range lines {
 		if errorRe.MatchString(line) {
-			errors = append(errors, line)
+			errors = append(errors, logError{msg: line})
 		}
 	}
 	return errors
@@ -294,21 +320,52 @@ func normalizeErrorPattern(msg string) string {
 	return normalized
 }
 
-// --- GoStorm API Types ---
+// --- Webhook Matcher Detector ---
 
-type goStormTorrent struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Stats struct {
-		Peers         int     `json:"peers"`
-		Seeders       int     `json:"seeders"`
-		DownloadSpeed float64 `json:"download_speed"`
-	} `json:"stats"`
+func (d *Detectors) webhookMatcherLoop() {
+	ticker := time.NewTicker(d.cfg.CheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			d.checkUnconfirmedPlay()
+		case <-d.stopCh:
+			return
+		}
+	}
 }
 
-type goStormResponse struct {
-	Result []goStormTorrent `json:"result"`
+func (d *Detectors) checkUnconfirmedPlay() {
+	lines := d.scanRecentLogErrors()
+	for _, e := range lines {
+		if strings.Contains(strings.ToLower(e.msg), "unconfirmed") ||
+			strings.Contains(strings.ToLower(e.msg), "no match") {
+			imdbRe := regexp.MustCompile(`tt\d+`)
+			imdbID := ""
+			if m := imdbRe.FindString(e.msg); m != "" {
+				imdbID = m
+			}
+
+			d.aiLog.Warn("webhook_matcher", "unconfirmed play detected",
+				F("issue", TypeUnconfirmedPlay),
+				F("imdb_id", imdbID),
+				F("log_snippet", e.msg),
+				F("action_needed", "verify"),
+			)
+			d.buffer.Add(Issue{
+				Type:        TypeUnconfirmedPlay,
+				Priority:    PriorityA,
+				IMDBID:      imdbID,
+				FirstSeen:   time.Now(),
+				Occurrences: 1,
+				LogSnippet:  e.msg,
+			})
+		}
+	}
 }
+
+// --- GoStorm API ---
 
 func (d *Detectors) fetchActiveTorrents() ([]goStormTorrent, error) {
 	resp, err := http.Get("http://localhost:8090/torrents")
@@ -332,31 +389,4 @@ func (d *Detectors) fetchActiveTorrents() ([]goStormTorrent, error) {
 	})
 
 	return result.Result, nil
-}
-
-// --- Placeholder detectors (to be implemented in Phase 2) ---
-
-// webhookMatcherLoop will detect unconfirmed plays and wrong matches.
-func (d *Detectors) webhookMatcherLoop() {
-	// TODO: Implement in Phase 2 — requires integration with webhook handler
-}
-
-// fuseAccessLoop will detect FUSE mount stalls and read errors.
-func (d *Detectors) fuseAccessLoop() {
-	// TODO: Implement in Phase 2 — requires FUSE instrumentation
-}
-
-// subtitleCheckerLoop will check subtitle availability after playback.
-func (d *Detectors) subtitleCheckerLoop() {
-	// TODO: Implement in Phase 2 — requires Jellyfin API integration
-}
-
-// seriesCompletenessLoop will check favorited series against TMDB.
-func (d *Detectors) seriesCompletenessLoop() {
-	// TODO: Implement in Phase 2 — requires TMDB + Jellyfin integration
-}
-
-// favoritesCheckLoop will verify movie pre-download completion.
-func (d *Detectors) favoritesCheckLoop() {
-	// TODO: Implement in Phase 2 — requires Jellyfin favorites API
 }

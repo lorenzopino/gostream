@@ -57,6 +57,14 @@ type EngineConfig struct {
 	LogsDir    string
 }
 
+// AIAgentConfig configures the AI maintenance agent subsystem.
+type AIAgentConfig struct {
+	Enabled         bool   `json:"enabled"`
+	WebhookURL      string `json:"webhook_url"`
+	DebounceSeconds int    `json:"debounce_seconds"`
+	MaxBufferSize   int    `json:"max_buffer_size"`
+}
+
 // Config holds all configurable parameters for the FUSE proxy
 type Config struct {
 	// --- Internal / Derived Fields ---
@@ -171,6 +179,9 @@ type Config struct {
 	// --- Media Server ---
 	MediaServerType string `json:"media_server_type"` // "plex" | "jellyfin"
 
+	// --- AI Maintenance Agent (V1.5.0) ---
+	AIAgent AIAgentConfig `json:"ai_agent"`
+
 	// --- Quality & Discovery ---
 	Quality       QualityConfig       `json:"quality"`
 	TMDBDiscovery TMDBDiscoveryConfig `json:"tmdb_discovery"`
@@ -259,6 +270,14 @@ func LoadConfig() Config {
 
 		// macOS: Block Spotlight/Finder scanning by default to prevent CPU spikes
 		DisableSpotlightIndexing: true,
+
+		// AI Maintenance Agent — disabled by default
+		AIAgent: AIAgentConfig{
+			Enabled:         false,
+			WebhookURL:      "",
+			DebounceSeconds: 300,
+			MaxBufferSize:   20,
+		},
 
 		// Legacy Fixed Defaults
 		DefaultFileSize:         30 * 1024 * 1024 * 1024,
