@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GoStream Action History",
+  "description": "Persistent log of all AI maintenance actions taken by the Hermes agent",
+  "type": "object",
+  "required": ["actions"],
+  "properties": {
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ts", "issue_type", "action", "result"],
+        "properties": {
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 timestamp of when the action was taken"
+          },
+          "issue_type": {
+            "type": "string",
+            "enum": [
+              "dead_torrent", "low_seeders", "no_download",
+              "slow_startup", "timeout_startup",
+              "wrong_match", "unconfirmed_play",
+              "fuse_error", "read_stall",
+              "error_spike", "pattern_anomaly",
+              "missing_subtitles", "incomplete_series", "incomplete_download"
+            ]
+          },
+          "file": {
+            "type": "string",
+            "description": "Filename associated with the issue"
+          },
+          "torrent_id": {
+            "type": "string",
+            "description": "GoStorm torrent identifier"
+          },
+          "root_cause": {
+            "type": "string",
+            "description": "What the agent determined was the cause"
+          },
+          "action": {
+            "type": "string",
+            "description": "What action was taken (replaced, retried, downloaded, etc.)"
+          },
+          "details": {
+            "type": "object",
+            "description": "Additional context specific to the action"
+          },
+          "result": {
+            "type": "string",
+            "enum": ["success", "partial", "failed"],
+            "description": "Outcome of the action"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Agent confidence level (0.0-1.0)"
+          },
+          "user_approved": {
+            "type": "boolean",
+            "description": "Whether the user approved this action (for high-risk actions)"
+          },
+          "lessons": {
+            "type": "string",
+            "description": "What was learned for future reference"
+          }
+        }
+      }
+    }
+  }
+}
