@@ -38,3 +38,4 @@ docker-windows/my-deploy/
 docker-windows/test/
 .sisyphus/
 .gitnexus
+.hippo/
